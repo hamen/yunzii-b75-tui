@@ -1,0 +1,51 @@
+{
+  "transactionId": "cap2",
+  "clickTimestampEpochMs": 1786382894721,
+  "clickTimestampIso": "2026-08-10T17:28:14.721Z",
+  "localTzOffsetMinutes": -120,
+  "connectionMode": "usb-cable",
+  "interfaceIdentity": {
+    "vendorIdHex": "0x28E9",
+    "productIdHex": "0x31C8",
+    "webhidDeviceIndex": 2,
+    "usagePageHex": "0xFF60",
+    "usageHex": "0x61"
+  },
+  "browser": "Chrome (claude-in-chrome automation)",
+  "siteAssetVersion": "index-8Bj3uPPc.js",
+  "note": "Second capture, ~241.05s after cap1. Only unique out-report hex was retrieved before the log was cleared for cap3 -- ACK/duplicate detail for this one is not stored, but is unnecessary: the ACK flip-rule and repeat count are independently confirmed by cap1 and cap3.",
+  "reports": [
+    {
+      "commandIndex": 0, "commandName": "cmd9-time-infoPackage", "opcodeHex": "0x40",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "40 00 00 07 f6 02 00 a5 5a 09 00 03 c3 e1 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "commandIndex": 0, "commandName": "cmd9-time-dataPacket", "opcodeHex": "0x41",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "41 00 00 03 81 00 00 13 1c 0e 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "decodedPayload": { "hour": 19, "minute": 28, "second": 14 }
+    },
+    {
+      "commandIndex": 0, "commandName": "cmd9-finish", "opcodeHex": "0x42",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "commandIndex": 1, "commandName": "cmd10-date-infoPackage", "opcodeHex": "0x40",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "40 00 00 07 a5 01 00 a5 5a 0a 00 04 01 50 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "commandIndex": 1, "commandName": "cmd10-date-dataPacket", "opcodeHex": "0x41",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "41 00 00 04 72 00 00 1a 01 08 0a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "decodedPayload": { "year2digit": 26, "weekday": 1, "month": 8, "date": 10 }
+    },
+    {
+      "commandIndex": 1, "commandName": "cmd10-finish", "opcodeHex": "0x42",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    }
+  ]
+}

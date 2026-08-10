@@ -1,0 +1,57 @@
+{
+  "transactionId": "cap1",
+  "clickTimestampEpochMs": 1786382653673,
+  "clickTimestampIso": "2026-08-10T17:24:13.673Z",
+  "localTzOffsetMinutes": -120,
+  "connectionMode": "usb-cable",
+  "interfaceIdentity": {
+    "vendorIdHex": "0x28E9",
+    "productIdHex": "0x31C8",
+    "webhidDeviceIndex": 2,
+    "usagePageHex": "0xFF60",
+    "usageHex": "0x61"
+  },
+  "browser": "Chrome (claude-in-chrome automation)",
+  "siteAssetVersion": "index-8Bj3uPPc.js",
+  "note": "First capture. Repeat count for this transaction was not independently re-verified in the browser session (assumed 3x, matching cap3 and the vendor source's for(i<3) loop) -- only unique report bytes are stored here, which is sufficient for the decode since duplicates are byte-identical retries.",
+  "reports": [
+    {
+      "commandIndex": 0, "commandName": "cmd9-time-infoPackage", "opcodeHex": "0x40",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "40 00 00 07 f6 02 00 a5 5a 09 00 03 c3 e1 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "commandIndex": 0, "commandName": "cmd9-time-infoPackage-ACK", "opcodeHex": "0x40",
+      "direction": "in", "hidMethod": "input-report", "reportId": 0,
+      "payloadHex": "40 00 00 07 f6 02 55 a5 5a 09 00 03 c3 e1 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "note": "identical to the request except byte offset 6 flips 0x00 -> 0x55 (status/ack byte). This flip rule is confirmed generic across all opcodes/commands observed; not re-stored per-fixture below."
+    },
+    {
+      "commandIndex": 0, "commandName": "cmd9-time-dataPacket", "opcodeHex": "0x41",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "41 00 00 03 7c 00 00 13 18 0d 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "decodedPayload": { "hour": 19, "minute": 24, "second": 13 }
+    },
+    {
+      "commandIndex": 0, "commandName": "cmd9-finish", "opcodeHex": "0x42",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "commandIndex": 1, "commandName": "cmd10-date-infoPackage", "opcodeHex": "0x40",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "40 00 00 07 a5 01 00 a5 5a 0a 00 04 01 50 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "commandIndex": 1, "commandName": "cmd10-date-dataPacket", "opcodeHex": "0x41",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "41 00 00 04 72 00 00 1a 01 08 0a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "decodedPayload": { "year2digit": 26, "weekday": 1, "month": 8, "date": 10 }
+    },
+    {
+      "commandIndex": 1, "commandName": "cmd10-finish", "opcodeHex": "0x42",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0,
+      "payloadHex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    }
+  ]
+}

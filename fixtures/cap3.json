@@ -1,0 +1,57 @@
+{
+  "transactionId": "cap3",
+  "clickTimestampEpochMs": 1786382995802,
+  "clickTimestampIso": "2026-08-10T17:29:55.802Z",
+  "localTzOffsetMinutes": -120,
+  "connectionMode": "usb-cable",
+  "interfaceIdentity": {
+    "vendorIdHex": "0x28E9",
+    "productIdHex": "0x31C8",
+    "webhidDeviceIndex": 2,
+    "usagePageHex": "0xFF60",
+    "usageHex": "0x61"
+  },
+  "browser": "Chrome (claude-in-chrome automation)",
+  "siteAssetVersion": "index-8Bj3uPPc.js",
+  "totalRawHidEvents": 54,
+  "repeatStructure": {
+    "repeatCount": 3,
+    "note": "Confirmed both by full raw log analysis (18 out reports = 3 * (3+3)) and by the vendor's own source: a literal `for (i=0; i<3; i++)` loop wrapping both command groups. Every out report gets exactly 2 identical inputreport ACKs (36 in-entries total): 18 out + 36 in = 54, matching totalRawHidEvents."
+  },
+  "reports": [
+    {
+      "commandIndex": 0, "commandName": "cmd9-time-infoPackage", "opcodeHex": "0x40",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0, "observedRepeats": 3,
+      "payloadHex": "40 00 00 07 f6 02 00 a5 5a 09 00 03 c3 e1 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "commandIndex": 0, "commandName": "cmd9-time-infoPackage-ACK", "opcodeHex": "0x40",
+      "direction": "in", "hidMethod": "input-report", "reportId": 0, "observedRepeats": 6,
+      "payloadHex": "40 00 00 07 f6 02 55 a5 5a 09 00 03 c3 e1 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "note": "2 ACKs per out report (6 = 3 out * 2 acks)"
+    },
+    {
+      "commandIndex": 0, "commandName": "cmd9-time-dataPacket", "opcodeHex": "0x41",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0, "observedRepeats": 3,
+      "payloadHex": "41 00 00 03 ab 00 00 13 1d 37 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "decodedPayload": { "hour": 19, "minute": 29, "second": 55 }
+    },
+    {
+      "commandIndex": 0, "commandName": "cmd9-finish", "opcodeHex": "0x42",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0, "observedRepeats": 6,
+      "payloadHex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "note": "sent once per group per repeat: 2 groups * 3 repeats = 6"
+    },
+    {
+      "commandIndex": 1, "commandName": "cmd10-date-infoPackage", "opcodeHex": "0x40",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0, "observedRepeats": 3,
+      "payloadHex": "40 00 00 07 a5 01 00 a5 5a 0a 00 04 01 50 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "commandIndex": 1, "commandName": "cmd10-date-dataPacket", "opcodeHex": "0x41",
+      "direction": "out", "hidMethod": "output-report", "reportId": 0, "observedRepeats": 3,
+      "payloadHex": "41 00 00 04 72 00 00 1a 01 08 0a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "decodedPayload": { "year2digit": 26, "weekday": 1, "month": 8, "date": 10 }
+    }
+  ]
+}
