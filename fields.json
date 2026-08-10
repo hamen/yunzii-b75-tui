@@ -1,0 +1,129 @@
+{
+  "$schema_note": "Maps every byte offset (0-63) of each report shape to a named field. Checked by bin/ci against fixtures/*.json for full coverage. Reassembly across multiple physical reports is NOT modeled here because discovery found there isn't any: opcodes 0x40/0x41/0x42 are independently complete report types, not fragments of one larger logical message (see PROTOCOL.md).",
+
+  "reportShapes": {
+    "0x40": {
+      "opcodeName": "sendScreenControlInformationPackage",
+      "totalLength": 64,
+      "fields": [
+        { "offset": [0, 0], "name": "opcode", "encoding": "constant", "value": "0x40" },
+        { "offset": [1, 2], "name": "reserved", "encoding": "constant", "value": "0x00 0x00" },
+        { "offset": [3, 3], "name": "length", "encoding": "u8", "meaning": "length of the info-package array that follows (magic+cmd+subfields+inner-crc)" },
+        { "offset": [4, 5], "name": "checksum16le", "encoding": "u16-le", "formula": "sum = (opcode + length + sum(payload_bytes)) & 0xFFFF, stored as [sum&0xFF, (sum>>8)&0xFF]" },
+        { "offset": [6, 6], "name": "status", "encoding": "u8", "meaning": "0x00 on outbound request, 0x55 on device ACK (getDongleAndKeyboardStatus opcode reused as an ack marker)" },
+        { "offset": [7, 63], "name": "payload_then_padding", "encoding": "bytes", "meaning": "the info-package array (length bytes, command-specific, see commands below), then 0x00 padding to offset 63" }
+      ]
+    },
+    "0x41": {
+      "opcodeName": "sendScreenControlDataPacket",
+      "totalLength": 64,
+      "fields": [
+        { "offset": [0, 0], "name": "opcode", "encoding": "constant", "value": "0x41" },
+        { "offset": [1, 2], "name": "reserved", "encoding": "constant", "value": "0x00 0x00" },
+        { "offset": [3, 3], "name": "length", "encoding": "u8", "meaning": "length of the data payload that follows" },
+        { "offset": [4, 4], "name": "checksum8", "encoding": "u8", "formula": "(opcode + length + sum(payload_bytes)) & 0xFF" },
+        { "offset": [5, 5], "name": "reserved", "encoding": "constant", "value": "0x00" },
+        { "offset": [6, 6], "name": "status", "encoding": "u8", "meaning": "0x00 outbound, 0x55 device ACK" },
+        { "offset": [7, 63], "name": "payload_then_padding", "encoding": "bytes", "meaning": "the data payload (length bytes, command-specific, see commands below), then 0x00 padding" }
+      ]
+    },
+    "0x42": {
+      "opcodeName": "finishScreenControlDataPacket",
+      "totalLength": 64,
+      "fields": [
+        { "offset": [0, 0], "name": "opcode", "encoding": "constant", "value": "0x42" },
+        { "offset": [1, 2], "name": "reserved", "encoding": "constant", "value": "0x00 0x00" },
+        { "offset": [3, 3], "name": "length", "encoding": "constant", "value": "0x38", "note": "always 56 for this opcode in every capture; the site calls it with no explicit payload -- 56 is a baked-in constant, not derived from an actual 56-byte payload. Numeric meaning of 56 itself is unresolved (see unresolved[])." },
+        { "offset": [4, 4], "name": "checksum8", "encoding": "u8", "formula": "(opcode + length + 0) & 0xFF  -- no real payload bytes contribute" },
+        { "offset": [5, 5], "name": "reserved", "encoding": "constant", "value": "0x00" },
+        { "offset": [6, 6], "name": "status", "encoding": "u8", "meaning": "0x00 outbound, 0x55 device ACK" },
+        { "offset": [7, 63], "name": "padding", "encoding": "bytes", "meaning": "always all-zero in every observed capture" }
+      ]
+    }
+  },
+
+  "commands": {
+    "cmd9_setClock": {
+      "infoPackagePayload": { "value": [165, 90, 9, 0, 3, 195, 225], "encoding": "constant", "note": "[magic 0xA5 0x5A, cmd=9, 0x00, len=3, innerCrc16(0x09,0x00,0x03)] -- innerCrc16 uses a SEPARATE CRC-16/ARC function (poly 0xA001 reflected, init 0xFFFF), precomputed by the vendor's bundler since inputs never change. Do not confuse with the outer report checksum above." },
+      "dataPacketPayload": {
+        "fields": [
+          { "index": 0, "name": "hour", "encoding": "u8", "range": "0-23" },
+          { "index": 1, "name": "minute", "encoding": "u8", "range": "0-59" },
+          { "index": 2, "name": "second", "encoding": "u8", "range": "0-59" }
+        ]
+      }
+    },
+    "cmd10_setDate": {
+      "infoPackagePayload": { "value": [165, 90, 10, 0, 4, 1, 80], "encoding": "constant", "note": "[magic, cmd=10, 0x00, len=4, innerCrc16(0x0A,0x00,0x04)]" },
+      "dataPacketPayload": {
+        "fields": [
+          { "index": 0, "name": "year2digit", "encoding": "u8", "range": "0-99", "meaning": "2-digit year, e.g. 26 for 2026" },
+          { "index": 1, "name": "weekday", "encoding": "u8", "range": "1-7", "meaning": "1=Monday .. 7=Sunday (dayjs Sunday=0 remapped to 7)" },
+          { "index": 2, "name": "month", "encoding": "u8", "range": "1-12" },
+          { "index": 3, "name": "date", "encoding": "u8", "range": "1-31", "meaning": "day of month" }
+        ]
+      }
+    }
+  },
+
+  "transactionStructure": {
+    "note": "One 'Update device time' click = a for-loop of 3 iterations (confirmed in vendor source), each iteration sending: cmd9 infoPackage(0x40) -> cmd9 dataPacket(0x41) -> finish(0x42) -> cmd10 infoPackage(0x40) -> cmd10 dataPacket(0x41) -> finish(0x42). Every outbound report receives exactly 2 identical inputreport ACKs from the device (byte offset 6 flipped 0x00->0x55, otherwise byte-identical to the request) -- see rawEventCounts below for the counted evidence behind \"exactly 2\", not just prose."
+  },
+
+  "rawEventCounts": {
+    "source": "cap3 session, full window.__hidLog for one click (54 raw HID events), counted directly (not sampled) before deduplication into fixtures/cap3.json's representative-per-type entries",
+    "outCounts": { "cmd9-infoPackage(0x40)": 3, "cmd9-dataPacket(0x41)": 3, "finish(0x42)_total_both_groups": 6, "cmd10-infoPackage(0x40)": 3, "cmd10-dataPacket(0x41)": 3 },
+    "inCounts": { "cmd9-infoPackage(0x40)_ACK": 6, "cmd9-dataPacket(0x41)_ACK": 6, "finish(0x42)_ACK_total_both_groups": 12, "cmd10-infoPackage(0x40)_ACK": 6, "cmd10-dataPacket(0x41)_ACK": 6 },
+    "arithmeticCheck": "sum(outCounts) = 3+3+6+3+3 = 18; sum(inCounts) = 6+6+12+6+6 = 36; 18+36 = 54, matching the raw log's total event count exactly -- every out report received exactly 2 in ACKs (inCount = 2 * outCount for every report type)."
+  },
+
+  "linuxInterfaceIdentity": {
+    "note": "Obtained directly via Linux shell access on the capture machine (not from browser JS -- the earlier draft of this phase incorrectly deferred this as unreachable; it only required a local shell, which was available all along).",
+    "configChannel": {
+      "hidrawNode": "/dev/hidraw5 (this machine, 2026-08-10 -- node numbers are not stable across reboots/replugs; re-identify by usage page/usage + descriptor hash, not by number)",
+      "usbInterfaceNumber": 1,
+      "usbDevpath": "/devices/pci0000:00/0000:00:08.1/0000:0c:00.3/usb5/5-1/5-1.3/5-1.3.1/5-1.3.1:1.1",
+      "reportDescriptorHex": "0660ff0961a1010962150026ff009540750881020963150026ff00954075089102c0",
+      "reportDescriptorSha256": "a30039d0de625e647b57a9a612acd6eeb82131ad7402849ed64136cda91f0843",
+      "decodedDescriptor": "Usage Page 0xFF60, Usage 0x61, Collection(Application): Usage 0x62 Input(count=64,size=8,data/var/abs), Usage 0x63 Output(count=64,size=8,data/var/abs). No Report ID item present -- confirms this is an unnumbered-report interface, consistent with WebHID's reportId:0.",
+      "productString": "YUNZII B75 PRO MAX Keyboard",
+      "serial": null,
+      "aclConfirmed": "getfacl shows `user:ivan:rw-` on /dev/hidraw5 -- the udev rule (VID 28E9) grants uaccess correctly on this interface, confirmed for all 4 of the device's hidraw nodes on this machine, not just some (an earlier plan-review round had flagged inconsistent ACL as a risk based on partial evidence; re-checked and it's uniform here)."
+    },
+    "allFourInterfaces": [
+      { "hidrawNode": "hidraw4", "usbInterfaceNumber": 0, "usagePage": "0x0001", "usage": "0x0006", "role": "standard keyboard (Generic Desktop / Keyboard)" },
+      { "hidrawNode": "hidraw5", "usbInterfaceNumber": 1, "usagePage": "0xFF60", "usage": "0x0061", "role": "vendor config channel -- THIS is the one used for screen control" },
+      { "hidrawNode": "hidraw7", "usbInterfaceNumber": 2, "usagePage": "0x0001 (+ consumer page 0x0C)", "usage": "0x0002 (mouse) + consumer controls", "role": "mouse + consumer-control combo interface" },
+      { "hidrawNode": "hidraw8", "usbInterfaceNumber": 3, "usagePage": "0xFF31", "usage": "0x0074", "role": "vendor-defined, input-only, 32-byte reports -- purpose not investigated, not used by screen control" }
+    ]
+  },
+
+  "unresolved": [
+    {
+      "item": "finish (0x42) length byte numeric meaning (why 0x38/56, not e.g. 0x00)",
+      "tried": "confirmed as a stable constant across 3 live captures and the vendor source (`finishScreenControlDataPacket()` called with no arguments every time); the checksum formula using this constant is verified exactly. Only the semantic reason for the value 56 itself is unknown -- it does not block using this command."
+    },
+    {
+      "item": "opcodes for commands other than cmd9 (time) and cmd10 (date) -- e.g. switch-page (11/13/15), clear picture/gif (14, sent 16x)",
+      "tried": "identified by name and constant info-package bytes directly from vendor source (see scripts/vendor-source-excerpt.js), but NOT independently confirmed via live HID capture this phase -- only cmd9/cmd10 were clicked and captured. Left for Milestone 2/3 discovery."
+    },
+    {
+      "item": "picture/GIF upload payload format",
+      "tried": "out of scope for this phase entirely -- not investigated."
+    },
+    {
+      "item": "WebHID sendReport(reportId, data) to Linux hidraw write() byte mapping -- does a native write() to /dev/hidrawX need a leading report-ID byte (0x00) prepended before these 64 bytes, given the device declares report ID 0 as a NUMBERED report (not the unnumbered/no-report-ID case)?",
+      "tried": "not testable from browser JS -- WebHID's sendReport API always excludes the report ID from its `data` argument by design, regardless of how Linux's hidraw treats report ID 0. This is a Linux-side kernel/driver detail that can only be resolved empirically once native code exists to try both forms against real hardware. Left for the Milestone 1 implementation phase."
+    },
+    {
+      "item": "2.4G dongle and Bluetooth connection modes -- whether the config interface is present/functional over either",
+      "tried": "only USB-C cable was tested this phase. Not yet checked for the other two modes."
+    },
+    {
+      "item": "device connect/init traffic before the first command",
+      "tried": "not captured -- the hook was installed after the device was already connected and open (a prior WebHID permission grant was already in place from an earlier session). The vendor's click-handler source (scripts/vendor-source-excerpt.js) shows no reference to connection-time state, which is a weak signal there's no required init handshake, but this is not independently confirmed by capturing a fresh connect sequence."
+    }
+  ],
+
+  "fixtureSchemaNote": "Every report in fixtures/*.json carries these required keys: transaction_id, command_index, fragment_index, direction, hid_method, report_id, payload_hex. fragment_index is always 0 for every report in this phase's fixtures -- discovery found opcodes 0x40/0x41/0x42 are independently complete report types, not fragments requiring reassembly (see $schema_note above), so the field exists per the fixture schema but carries no ordering information here."
+}

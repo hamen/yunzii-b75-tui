@@ -42,9 +42,13 @@ guessing at the byte format blind, this repo's discovery phase:
    extracted from firmware or any protected asset), which contains the exact
    functions that build these commands.
 3. Verifies the resulting byte-level model against real captured traffic with
-   a runnable script (`scripts/verify-checksums.js`).
+   runnable scripts (`scripts/verify-checksums.js`, `scripts/check-coverage.js`,
+   `scripts/check-raw-consistency.js`).
 
-See `PROTOCOL.md` for the decoded format and `fixtures/` for the raw evidence.
+See `PROTOCOL.md` for the decoded format, `fixtures/` for the decoded
+per-capture evidence (checksums and structure independently re-verified
+against the real device), and `fixtures/raw/` for a minimally processed
+capture log that `fixtures/cap1.json` is checked against byte-for-byte.
 
 ## License
 
