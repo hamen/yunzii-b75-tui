@@ -23,7 +23,7 @@
 // --- CRC-16/ARC (poly 0xA001 reflected, init 0xFFFF) ---
 // Used ONLY to precompute the constant inner command bytes (baked into the
 // bundle as literals for cmd-9/cmd-10 headers) -- NOT used for the outer
-// 64-byte HID report checksum (see FINDINGS.md).
+// 64-byte HID report checksum (see PROTOCOL.md).
 function ga(t) {
   let n = 65535;
   for (let r = 0; r < t.length; r++) {

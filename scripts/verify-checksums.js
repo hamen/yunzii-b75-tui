@@ -1,6 +1,10 @@
 // Verifies the outer-report checksum formula and the vendor's inner CRC-16
-// against real captured bytes (see raw-captures.json / FINDINGS.md). Run with
-// `node verify-checksums.js`. All assertions passed on 2026-08-10.
+// against the vendor's own hardcoded constants (see
+// scripts/vendor-source-excerpt.js). This is a from-first-principles check
+// independent of fixtures/*.json; scripts/check-coverage.js separately
+// verifies fixtures against fields.json and against this same formula.
+// Run with `node scripts/verify-checksums.js`. All assertions passed on
+// 2026-08-10.
 
 function ga(t) {
   let n = 65535;

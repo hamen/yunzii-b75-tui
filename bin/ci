@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Local pre-push gate for this repo (no GitHub Actions -- same convention as
-# the rest of this codebase). Runs the discovery-phase checks: every fixture's
-# checksum recomputes correctly from its own bytes, and fields.json's byte
-# ranges cover every report shape with no gaps. Full cargo fmt/test/clippy
-# wiring lands with the first Rust code, in the follow-up implementation PR.
+# the rest of this codebase). Runs the discovery-phase checks:
+#   - verify-checksums.js: the checksum formula matches the vendor's own
+#     hardcoded constants, independent of fixtures/
+#   - check-coverage.js: fields.json's byte ranges cover every report shape
+#     with no gaps; every fixture has the required schema keys, is exactly
+#     64 bytes, has a checksum that recomputes correctly from its own bytes,
+#     has reserved/padding bytes that are actually zero, and (where present)
+#     a decoded_payload that matches the raw bytes
+# Full cargo fmt/test/clippy wiring lands with the first Rust code, in the
+# follow-up implementation PR.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

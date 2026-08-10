@@ -6,11 +6,23 @@
 //
 // Captures: outbound sendReport + sendFeatureReport, inbound inputreport
 // events + receiveFeatureReport results. Safe to re-run; installs hooks once.
+//
+// LIMITATION: this hook is injected AFTER the device is already open (a
+// WebHID permission grant from an earlier session was already in place). It
+// therefore cannot capture any traffic sent during the initial connect/open
+// handshake, if there is one -- see fields.json's `unresolved` list.
 
 window.__hidLog = window.__hidLog || [];
 
-function toHex(buf) {
-  const arr = buf instanceof ArrayBuffer ? new Uint8Array(buf) : new Uint8Array(buf.buffer || buf);
+// Accepts an ArrayBuffer, a DataView, or a TypedArray. Must respect
+// byteOffset/byteLength for DataView/TypedArray inputs -- reading `.buffer`
+// directly (as an earlier version of this function did) returns the WHOLE
+// underlying buffer, which can include bytes outside the actual view if the
+// view doesn't start at offset 0 or doesn't span the whole buffer.
+function toHex(view) {
+  const arr = view instanceof ArrayBuffer
+    ? new Uint8Array(view)
+    : new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
   return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join(' ');
 }
 
@@ -32,7 +44,7 @@ if (!window.__hidHookInstalled) {
   const origReceiveFeatureReport = HIDDevice.prototype.receiveFeatureReport;
   HIDDevice.prototype.receiveFeatureReport = function (reportId) {
     return origReceiveFeatureReport.call(this, reportId).then((dv) => {
-      window.__hidLog.push({ t: Date.now(), dir: 'in', method: 'receiveFeatureReport', reportId, hex: toHex(dv.buffer) });
+      window.__hidLog.push({ t: Date.now(), dir: 'in', method: 'receiveFeatureReport', reportId, hex: toHex(dv) });
       return dv;
     });
   };
@@ -44,7 +56,7 @@ devices.forEach((d) => {
   if (!d.__hooked) {
     d.__hooked = true;
     d.addEventListener('inputreport', (e) => {
-      window.__hidLog.push({ t: Date.now(), dir: 'in', method: 'inputreport', reportId: e.reportId, hex: toHex(e.data.buffer) });
+      window.__hidLog.push({ t: Date.now(), dir: 'in', method: 'inputreport', reportId: e.reportId, hex: toHex(e.data) });
     });
   }
 });
@@ -64,5 +76,9 @@ devices.forEach((d) => {
 // On this machine, 2026-08-10: 4 HID interfaces under VID 0x28E9 / PID 0x31C8.
 // Index 2 has usagePage 0xFF60 / usage 0x61 (the standard QMK/VIA "Raw HID"
 // usage), report ID 0, 64-byte input AND output reports, and is the one the
-// site has already opened ("opened": true) when connected. This is almost
-// certainly the vendor config channel used for screen settings.
+// site has already opened ("opened": true) when connected. This IS the
+// vendor config channel used for screen settings -- confirmed, not just
+// inferred, since every captured "Update device time" report matches the
+// protocol decoded from the vendor's own source exactly (see PROTOCOL.md).
+// Interface *numbering* can still vary by machine/session; re-identify by
+// usage page/usage at runtime, not by a fixed index.

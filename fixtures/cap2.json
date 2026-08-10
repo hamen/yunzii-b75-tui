@@ -1,51 +1,100 @@
 {
-  "transactionId": "cap2",
-  "clickTimestampEpochMs": 1786382894721,
-  "clickTimestampIso": "2026-08-10T17:28:14.721Z",
-  "localTzOffsetMinutes": -120,
-  "connectionMode": "usb-cable",
-  "interfaceIdentity": {
-    "vendorIdHex": "0x28E9",
-    "productIdHex": "0x31C8",
-    "webhidDeviceIndex": 2,
-    "usagePageHex": "0xFF60",
-    "usageHex": "0x61"
+  "transaction_id": "cap2",
+  "click_timestamp_epoch_ms": 1786382894721,
+  "click_timestamp_iso": "2026-08-10T17:28:14.721Z",
+  "tz_offset_minutes": -120,
+  "connection_mode": "usb-cable",
+  "interface_identity": {
+    "vendor_id_hex": "0x28E9",
+    "product_id_hex": "0x31C8",
+    "product_name": "YUNZII B75 PRO MAX Keyboard",
+    "webhid_device_index": 2,
+    "usage_page_hex": "0xFF60",
+    "usage_hex": "0x61",
+    "serial": null,
+    "note": "Linux-side sysfs report-descriptor bytes/hash and USB topology (bInterfaceNumber, bus/port path) were NOT captured this phase -- not reachable from browser JS. VID+PID+usage-page+usage is the same 4-tuple WebHID itself uses to disambiguate interfaces, which is sufficient to reliably re-open this exact interface; deeper sysfs correlation is deferred to the Rust implementation phase where it is actually actionable on Linux."
   },
   "browser": "Chrome (claude-in-chrome automation)",
-  "siteAssetVersion": "index-8Bj3uPPc.js",
-  "note": "Second capture, ~241.05s after cap1. Only unique out-report hex was retrieved before the log was cleared for cap3 -- ACK/duplicate detail for this one is not stored, but is unnecessary: the ACK flip-rule and repeat count are independently confirmed by cap1 and cap3.",
+  "site_asset_version": "index-8Bj3uPPc.js",
+  "time_source": "real wall clock at click time (NOT an injected/overridden Date) -- see PROTOCOL.md for why this phase relies on wall-clock diffing + vendor-source cross-validation instead of a synthetic Date-override capture matrix",
   "reports": [
     {
-      "commandIndex": 0, "commandName": "cmd9-time-infoPackage", "opcodeHex": "0x40",
-      "direction": "out", "hidMethod": "output-report", "reportId": 0,
-      "payloadHex": "40 00 00 07 f6 02 00 a5 5a 09 00 03 c3 e1 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+      "transaction_id": "cap2",
+      "command_index": 0,
+      "command_name": "cmd9-time-infoPackage",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 07 f6 02 00 a5 5a 09 00 03 c3 e1 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
     },
     {
-      "commandIndex": 0, "commandName": "cmd9-time-dataPacket", "opcodeHex": "0x41",
-      "direction": "out", "hidMethod": "output-report", "reportId": 0,
-      "payloadHex": "41 00 00 03 81 00 00 13 1c 0e 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
-      "decodedPayload": { "hour": 19, "minute": 28, "second": 14 }
+      "transaction_id": "cap2",
+      "command_index": 0,
+      "command_name": "cmd9-time-dataPacket",
+      "fragment_index": 0,
+      "opcode_hex": "0x41",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "41 00 00 03 81 00 00 13 1c 0e 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "decoded_payload": {
+        "hour": 19,
+        "minute": 28,
+        "second": 14
+      }
     },
     {
-      "commandIndex": 0, "commandName": "cmd9-finish", "opcodeHex": "0x42",
-      "direction": "out", "hidMethod": "output-report", "reportId": 0,
-      "payloadHex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+      "transaction_id": "cap2",
+      "command_index": 0,
+      "command_name": "cmd9-finish",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
     },
     {
-      "commandIndex": 1, "commandName": "cmd10-date-infoPackage", "opcodeHex": "0x40",
-      "direction": "out", "hidMethod": "output-report", "reportId": 0,
-      "payloadHex": "40 00 00 07 a5 01 00 a5 5a 0a 00 04 01 50 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+      "transaction_id": "cap2",
+      "command_index": 1,
+      "command_name": "cmd10-date-infoPackage",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 07 a5 01 00 a5 5a 0a 00 04 01 50 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
     },
     {
-      "commandIndex": 1, "commandName": "cmd10-date-dataPacket", "opcodeHex": "0x41",
-      "direction": "out", "hidMethod": "output-report", "reportId": 0,
-      "payloadHex": "41 00 00 04 72 00 00 1a 01 08 0a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
-      "decodedPayload": { "year2digit": 26, "weekday": 1, "month": 8, "date": 10 }
+      "transaction_id": "cap2",
+      "command_index": 1,
+      "command_name": "cmd10-date-dataPacket",
+      "fragment_index": 0,
+      "opcode_hex": "0x41",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "41 00 00 04 72 00 00 1a 01 08 0a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "decoded_payload": {
+        "year2digit": 26,
+        "weekday": 1,
+        "month": 8,
+        "date": 10
+      }
     },
     {
-      "commandIndex": 1, "commandName": "cmd10-finish", "opcodeHex": "0x42",
-      "direction": "out", "hidMethod": "output-report", "reportId": 0,
-      "payloadHex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+      "transaction_id": "cap2",
+      "command_index": 1,
+      "command_name": "cmd10-finish",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
     }
-  ]
+  ],
+  "note": "Only unique out-report bytes were retrieved before the log was cleared for cap3 -- ACK/duplicate/repeat-count detail for this one is not stored (see cap1 and cap3 for that structure, independently confirmed there and in the vendor source)."
 }

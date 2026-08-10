@@ -9,7 +9,7 @@
         { "offset": [0, 0], "name": "opcode", "encoding": "constant", "value": "0x40" },
         { "offset": [1, 2], "name": "reserved", "encoding": "constant", "value": "0x00 0x00" },
         { "offset": [3, 3], "name": "length", "encoding": "u8", "meaning": "length of the info-package array that follows (magic+cmd+subfields+inner-crc)" },
-        { "offset": [4, 5], "name": "checksum16le", "encoding": "u16-le", "formula": "(opcode + length + sum(payload_bytes)) & 0xFFFF, stored as [byte&0xFF, (byte>>8)&0xFF]" },
+        { "offset": [4, 5], "name": "checksum16le", "encoding": "u16-le", "formula": "sum = (opcode + length + sum(payload_bytes)) & 0xFFFF, stored as [sum&0xFF, (sum>>8)&0xFF]" },
         { "offset": [6, 6], "name": "status", "encoding": "u8", "meaning": "0x00 on outbound request, 0x55 on device ACK (getDongleAndKeyboardStatus opcode reused as an ack marker)" },
         { "offset": [7, 63], "name": "payload_then_padding", "encoding": "bytes", "meaning": "the info-package array (length bytes, command-specific, see commands below), then 0x00 padding to offset 63" }
       ]
@@ -82,6 +82,24 @@
     {
       "item": "picture/GIF upload payload format",
       "tried": "out of scope for this phase entirely -- not investigated."
+    },
+    {
+      "item": "WebHID sendReport(reportId, data) to Linux hidraw write() byte mapping -- does a native write() to /dev/hidrawX need a leading report-ID byte (0x00) prepended before these 64 bytes, given the device declares report ID 0 as a NUMBERED report (not the unnumbered/no-report-ID case)?",
+      "tried": "not testable from browser JS -- WebHID's sendReport API always excludes the report ID from its `data` argument by design, regardless of how Linux's hidraw treats report ID 0. This is a Linux-side kernel/driver detail that can only be resolved empirically once native code exists to try both forms against real hardware. Left for the Milestone 1 implementation phase."
+    },
+    {
+      "item": "Linux-side interface correlation beyond VID+PID+usage-page+usage (sysfs report-descriptor bytes/hash, USB topology / bInterfaceNumber, product string, serial)",
+      "tried": "not reachable from browser JS (no filesystem/sysfs access from a web page). The VID+PID+usage-page+usage 4-tuple already recorded is the same signature WebHID itself uses internally to disambiguate interfaces via requestDevice filters, and is expected to be sufficient to reliably re-open this exact interface from Rust. Deeper sysfs correlation (udevadm, /sys/class/hidraw/*/device/report_descriptor) is deferred to the Milestone 1 implementation phase, where it's actually actionable on this Linux machine."
+    },
+    {
+      "item": "2.4G dongle and Bluetooth connection modes -- whether the config interface is present/functional over either",
+      "tried": "only USB-C cable was tested this phase. Not yet checked for the other two modes."
+    },
+    {
+      "item": "device connect/init traffic before the first command",
+      "tried": "not captured -- the hook was installed after the device was already connected and open (a prior WebHID permission grant was already in place from an earlier session). The vendor's click-handler source (scripts/vendor-source-excerpt.js) shows no reference to connection-time state, which is a weak signal there's no required init handshake, but this is not independently confirmed by capturing a fresh connect sequence."
     }
-  ]
+  ],
+
+  "fixtureSchemaNote": "Every report in fixtures/*.json carries these required keys: transaction_id, command_index, fragment_index, direction, hid_method, report_id, payload_hex. fragment_index is always 0 for every report in this phase's fixtures -- discovery found opcodes 0x40/0x41/0x42 are independently complete report types, not fragments requiring reassembly (see $schema_note above), so the field exists per the fixture schema but carries no ordering information here."
 }
