@@ -3,6 +3,7 @@
   "click_timestamp_epoch_ms": 1786382653673,
   "click_timestamp_iso": "2026-08-10T17:24:13.673Z",
   "tz_offset_minutes": -120,
+  "tz_offset_convention": "JS Date.getTimezoneOffset() sense: (UTC - local) in minutes, so -120 means local = UTC+2",
   "connection_mode": "usb-cable",
   "interface_identity": {
     "vendor_id_hex": "0x28E9",
@@ -12,11 +13,11 @@
     "usage_page_hex": "0xFF60",
     "usage_hex": "0x61",
     "serial": null,
-    "note": "Linux-side sysfs report-descriptor bytes/hash and USB topology (bInterfaceNumber, bus/port path) were NOT captured this phase -- not reachable from browser JS. VID+PID+usage-page+usage is the same 4-tuple WebHID itself uses to disambiguate interfaces, which is sufficient to reliably re-open this exact interface; deeper sysfs correlation is deferred to the Rust implementation phase where it is actually actionable on Linux."
+    "note": "webhid_device_index is machine/session-specific noise, NOT a stable identifier -- re-enumerate by usage_page_hex+usage_hex at runtime. Linux-side sysfs report-descriptor bytes/hash and USB topology were NOT captured this phase -- not reachable from browser JS; deferred to the Milestone 1 implementation phase where sysfs is actually reachable."
   },
   "browser": "Chrome (claude-in-chrome automation)",
   "site_asset_version": "index-8Bj3uPPc.js",
-  "time_source": "real wall clock at click time (NOT an injected/overridden Date) -- see PROTOCOL.md for why this phase relies on wall-clock diffing + vendor-source cross-validation instead of a synthetic Date-override capture matrix",
+  "time_source": "real wall clock at click time (NOT an injected/overridden Date). See PROTOCOL.md / PR #1 disposition comment for why this phase relies on wall-clock diffing + vendor-source cross-validation instead of a synthetic Date-override rollover matrix.",
   "reports": [
     {
       "transaction_id": "cap1",
@@ -27,8 +28,7 @@
       "direction": "out",
       "hid_method": "output-report",
       "report_id": 0,
-      "payload_hex": "40 00 00 07 f6 02 00 a5 5a 09 00 03 c3 e1 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
-      "observed_repeats": 3
+      "payload_hex": "40 00 00 07 f6 02 00 a5 5a 09 00 03 c3 e1 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
     },
     {
       "transaction_id": "cap1",
@@ -39,8 +39,7 @@
       "direction": "in",
       "hid_method": "input-report",
       "report_id": 0,
-      "payload_hex": "40 00 00 07 f6 02 55 a5 5a 09 00 03 c3 e1 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
-      "observed_repeats": 6
+      "payload_hex": "40 00 00 07 f6 02 55 a5 5a 09 00 03 c3 e1 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
     },
     {
       "transaction_id": "cap1",
@@ -52,7 +51,22 @@
       "hid_method": "output-report",
       "report_id": 0,
       "payload_hex": "41 00 00 03 7c 00 00 13 18 0d 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
-      "observed_repeats": 3,
+      "decoded_payload": {
+        "hour": 19,
+        "minute": 24,
+        "second": 13
+      }
+    },
+    {
+      "transaction_id": "cap1",
+      "command_index": 0,
+      "command_name": "cmd9-time-dataPacket-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x41",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "41 00 00 03 7c 00 55 13 18 0d 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
       "decoded_payload": {
         "hour": 19,
         "minute": 24,
@@ -68,8 +82,18 @@
       "direction": "out",
       "hid_method": "output-report",
       "report_id": 0,
-      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
-      "observed_repeats": 3
+      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "cap1",
+      "command_index": 0,
+      "command_name": "cmd9-finish-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
     },
     {
       "transaction_id": "cap1",
@@ -80,8 +104,18 @@
       "direction": "out",
       "hid_method": "output-report",
       "report_id": 0,
-      "payload_hex": "40 00 00 07 a5 01 00 a5 5a 0a 00 04 01 50 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
-      "observed_repeats": 3
+      "payload_hex": "40 00 00 07 a5 01 00 a5 5a 0a 00 04 01 50 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "cap1",
+      "command_index": 1,
+      "command_name": "cmd10-date-infoPackage-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 07 a5 01 55 a5 5a 0a 00 04 01 50 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
     },
     {
       "transaction_id": "cap1",
@@ -93,7 +127,23 @@
       "hid_method": "output-report",
       "report_id": 0,
       "payload_hex": "41 00 00 04 72 00 00 1a 01 08 0a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
-      "observed_repeats": 3,
+      "decoded_payload": {
+        "year2digit": 26,
+        "weekday": 1,
+        "month": 8,
+        "date": 10
+      }
+    },
+    {
+      "transaction_id": "cap1",
+      "command_index": 1,
+      "command_name": "cmd10-date-dataPacket-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x41",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "41 00 00 04 72 00 55 1a 01 08 0a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
       "decoded_payload": {
         "year2digit": 26,
         "weekday": 1,
@@ -110,8 +160,18 @@
       "direction": "out",
       "hid_method": "output-report",
       "report_id": 0,
-      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
-      "observed_repeats": 3
+      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "cap1",
+      "command_index": 1,
+      "command_name": "cmd10-finish-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
     }
   ]
 }

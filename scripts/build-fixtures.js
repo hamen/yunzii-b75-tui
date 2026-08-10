@@ -1,48 +1,80 @@
-// Generates fixtures/*.json from structured capture data, guaranteeing every
-// report is exactly 64 bytes and every checksum is computed (never
-// hand-transcribed) -- run with `node scripts/build-fixtures.js` from repo
-// root whenever a new capture is added. This replaces hand-typed hex, which
-// previously had a transcription bug (every 0x40/0x41 OUT report was one
-// padding byte short -- caught in PR #1 cross-review).
+// Builds fixtures/*.json from REAL captured evidence, not from the abstract
+// checksum model (a prior version of this script regenerated everything from
+// the model, which made check-coverage.js circular -- caught in PR #1
+// cross-review round 2). This version:
+//
+//  1. Hardcodes only the SHORT, real, independently re-verified byte
+//     sequences actually observed on the wire (never more than ~14 tokens
+//     typed by hand at once -- long hand-typed zero-padding runs are exactly
+//     where a real transcription bug slipped through earlier in this repo's
+//     history: every 0x40/0x41 OUT report was one padding byte short).
+//  2. Derives the zero-padding programmatically (`padTo64`), never by typing
+//     more than a few zeros in a row.
+//  3. For cap1, every report pair (OUT + its real device ACK) was
+//     byte-count-validated and cross-checked against each other (ACK == OUT
+//     with only byte[6] flipped 0x00->0x55) before being hardcoded here --
+//     see the disposition comment on PR #1 for the verification steps.
+//  4. The checksum bytes below are REAL observed values (confirmed via the
+//     device's own ACK, which echoes them back). check-coverage.js
+//     INDEPENDENTLY recomputes what the checksum should be from
+//     opcode+length+payload and asserts it matches -- this is now a true
+//     independent check of the decoded formula against real hardware
+//     evidence, not a check of the model against itself.
+//  5. The three info-package (0x40), finish (0x42), and cmd10-date-data
+//     (0x41) reports were independently confirmed byte-identical across all
+//     3 captures in this session (D/T are vendor-source constants; the date
+//     payload never changed within the ~6-minute capture window) -- so cap2
+//     and cap3 reuse cap1's fully-verified bytes for those, and only supply
+//     their own short, independently-observed cmd9-dataPacket bytes (the one
+//     report that actually varies with time).
+//
+// Run with `node scripts/build-fixtures.js` to regenerate.
 
 const fs = require('fs');
 const path = require('path');
+
+function padTo64(bytes) {
+  const out = bytes.slice();
+  while (out.length < 64) out.push(0);
+  if (out.length !== 64) throw new Error(`padTo64: got ${out.length}, expected <=64 input`);
+  return out;
+}
 
 function toHexBytes(bytes) {
   return bytes.map((b) => b.toString(16).padStart(2, '0')).join(' ');
 }
 
-// Builds one 64-byte report. status=0 for outbound, 0x55 for the device ACK.
-function buildReport(opcode, length, payload, status) {
-  const bytes = new Array(64).fill(0);
-  bytes[0] = opcode;
-  bytes[3] = length;
-  const sum = opcode + length + payload.reduce((a, b) => a + b, 0);
-  if (opcode === 0x40) {
-    bytes[4] = sum & 0xff;
-    bytes[5] = (sum >> 8) & 0xff;
-    bytes[6] = status;
-  } else {
-    bytes[4] = sum & 0xff;
-    bytes[5] = 0;
-    bytes[6] = status;
-  }
-  for (let i = 0; i < payload.length; i++) bytes[7 + i] = payload[i];
-  return bytes;
+// --- Real, verbatim-verified byte sequences (see header comment) ---
+
+// cmd9 info-package (0x40): opcode,reserved,reserved,length,checksumLo,checksumHi,status, then payload D=[165,90,9,0,3,195,225]
+const CMD9_INFO_OUT = padTo64([0x40, 0, 0, 7, 0xf6, 0x02, 0x00, 165, 90, 9, 0, 3, 195, 225]);
+const CMD9_INFO_ACK = padTo64([0x40, 0, 0, 7, 0xf6, 0x02, 0x55, 165, 90, 9, 0, 3, 195, 225]);
+
+// finish (0x42): identical for both command groups, confirmed across every capture this session
+const FINISH_OUT = padTo64([0x42, 0, 0, 0x38, 0x7a, 0x00, 0x00]);
+const FINISH_ACK = padTo64([0x42, 0, 0, 0x38, 0x7a, 0x00, 0x55]);
+
+// cmd10 info-package (0x40): payload T=[165,90,10,0,4,1,80]
+const CMD10_INFO_OUT = padTo64([0x40, 0, 0, 7, 0xa5, 0x01, 0x00, 165, 90, 10, 0, 4, 1, 80]);
+const CMD10_INFO_ACK = padTo64([0x40, 0, 0, 7, 0xa5, 0x01, 0x55, 165, 90, 10, 0, 4, 1, 80]);
+
+// cmd10 data-packet (0x41): payload = [year2digit, weekday, month, date] = [26,1,8,10], unchanged across all 3 captures
+const CMD10_DATA_OUT = padTo64([0x41, 0, 0, 4, 0x72, 0x00, 0x00, 26, 1, 8, 10]);
+const CMD10_DATA_ACK = padTo64([0x41, 0, 0, 4, 0x72, 0x00, 0x55, 26, 1, 8, 10]);
+
+// cmd9 data-packet (0x41): payload = [hour, minute, second] -- the one report that varies per capture.
+// Checksum bytes below are the REAL value observed on the wire (device echoed them back in its ACK).
+function cmd9Data(checksum, hour, minute, second, withAck) {
+  const out = padTo64([0x41, 0, 0, 3, checksum, 0x00, 0x00, hour, minute, second]);
+  const ack = withAck ? padTo64([0x41, 0, 0, 3, checksum, 0x00, 0x55, hour, minute, second]) : null;
+  return { out, ack };
 }
 
-const D = [165, 90, 9, 0, 3, 195, 225];
-const T = [165, 90, 10, 0, 4, 1, 80];
-
-function buildTransaction({ transactionId, clickEpochMs, tzOffsetMinutes, hour, minute, second, year2, weekday, month, date, includeAcks, includeCmd10Finish, repeatCounts }) {
-  const P = [hour, minute, second];
-  const M = [year2, weekday, month, date];
+function buildTransaction({ transactionId, clickEpochMs, hour, minute, second, cmd9Checksum, includeAcks }) {
+  const { out: cmd9DataOut, ack: cmd9DataAck } = cmd9Data(cmd9Checksum, hour, minute, second, includeAcks);
 
   const reports = [];
-
-  function push(commandIndex, commandName, opcode, length, payload, direction, observedRepeats, decodedPayload) {
-    const status = direction === 'in' ? 0x55 : 0x00;
-    const bytes = buildReport(opcode, length, payload, status);
+  function push(commandIndex, commandName, opcode, direction, bytes, decodedPayload) {
     const entry = {
       transaction_id: transactionId,
       command_index: commandIndex,
@@ -54,25 +86,30 @@ function buildTransaction({ transactionId, clickEpochMs, tzOffsetMinutes, hour, 
       report_id: 0,
       payload_hex: toHexBytes(bytes),
     };
-    if (observedRepeats !== undefined) entry.observed_repeats = observedRepeats;
-    if (decodedPayload !== undefined) entry.decoded_payload = decodedPayload;
+    if (decodedPayload) entry.decoded_payload = decodedPayload;
     reports.push(entry);
   }
 
-  push(0, 'cmd9-time-infoPackage', 0x40, D.length, D, 'out', repeatCounts.cmd9infoOut);
-  if (includeAcks) push(0, 'cmd9-time-infoPackage-ACK', 0x40, D.length, D, 'in', repeatCounts.cmd9infoIn);
-  push(0, 'cmd9-time-dataPacket', 0x41, P.length, P, 'out', repeatCounts.cmd9dataOut, { hour, minute, second });
-  push(0, 'cmd9-finish', 0x42, 0x38, [], 'out', repeatCounts.cmd9finishOut);
+  push(0, 'cmd9-time-infoPackage', 0x40, 'out', CMD9_INFO_OUT);
+  if (includeAcks) push(0, 'cmd9-time-infoPackage-ACK', 0x40, 'in', CMD9_INFO_ACK);
+  push(0, 'cmd9-time-dataPacket', 0x41, 'out', cmd9DataOut, { hour, minute, second });
+  if (includeAcks) push(0, 'cmd9-time-dataPacket-ACK', 0x41, 'in', cmd9DataAck, { hour, minute, second });
+  push(0, 'cmd9-finish', 0x42, 'out', FINISH_OUT);
+  if (includeAcks) push(0, 'cmd9-finish-ACK', 0x42, 'in', FINISH_ACK);
 
-  push(1, 'cmd10-date-infoPackage', 0x40, T.length, T, 'out', repeatCounts.cmd10infoOut);
-  push(1, 'cmd10-date-dataPacket', 0x41, M.length, M, 'out', repeatCounts.cmd10dataOut, { year2digit: year2, weekday, month, date });
-  if (includeCmd10Finish) push(1, 'cmd10-finish', 0x42, 0x38, [], 'out', repeatCounts.cmd10finishOut);
+  push(1, 'cmd10-date-infoPackage', 0x40, 'out', CMD10_INFO_OUT);
+  if (includeAcks) push(1, 'cmd10-date-infoPackage-ACK', 0x40, 'in', CMD10_INFO_ACK);
+  push(1, 'cmd10-date-dataPacket', 0x41, 'out', CMD10_DATA_OUT, { year2digit: 26, weekday: 1, month: 8, date: 10 });
+  if (includeAcks) push(1, 'cmd10-date-dataPacket-ACK', 0x41, 'in', CMD10_DATA_ACK, { year2digit: 26, weekday: 1, month: 8, date: 10 });
+  push(1, 'cmd10-finish', 0x42, 'out', FINISH_OUT);
+  if (includeAcks) push(1, 'cmd10-finish-ACK', 0x42, 'in', FINISH_ACK);
 
   return {
     transaction_id: transactionId,
     click_timestamp_epoch_ms: clickEpochMs,
     click_timestamp_iso: new Date(clickEpochMs).toISOString(),
-    tz_offset_minutes: tzOffsetMinutes,
+    tz_offset_minutes: -120,
+    tz_offset_convention: 'JS Date.getTimezoneOffset() sense: (UTC - local) in minutes, so -120 means local = UTC+2',
     connection_mode: 'usb-cable',
     interface_identity: {
       vendor_id_hex: '0x28E9',
@@ -82,40 +119,25 @@ function buildTransaction({ transactionId, clickEpochMs, tzOffsetMinutes, hour, 
       usage_page_hex: '0xFF60',
       usage_hex: '0x61',
       serial: null,
-      note: 'Linux-side sysfs report-descriptor bytes/hash and USB topology (bInterfaceNumber, bus/port path) were NOT captured this phase -- not reachable from browser JS. VID+PID+usage-page+usage is the same 4-tuple WebHID itself uses to disambiguate interfaces, which is sufficient to reliably re-open this exact interface; deeper sysfs correlation is deferred to the Rust implementation phase where it is actually actionable on Linux.'
+      note: 'webhid_device_index is machine/session-specific noise, NOT a stable identifier -- re-enumerate by usage_page_hex+usage_hex at runtime. Linux-side sysfs report-descriptor bytes/hash and USB topology were NOT captured this phase -- not reachable from browser JS; deferred to the Milestone 1 implementation phase where sysfs is actually reachable.'
     },
     browser: 'Chrome (claude-in-chrome automation)',
     site_asset_version: 'index-8Bj3uPPc.js',
-    time_source: 'real wall clock at click time (NOT an injected/overridden Date) -- see PROTOCOL.md for why this phase relies on wall-clock diffing + vendor-source cross-validation instead of a synthetic Date-override capture matrix',
+    time_source: 'real wall clock at click time (NOT an injected/overridden Date). See PROTOCOL.md / PR #1 disposition comment for why this phase relies on wall-clock diffing + vendor-source cross-validation instead of a synthetic Date-override rollover matrix.',
     reports,
   };
 }
 
-const cap1 = buildTransaction({
-  transactionId: 'cap1', clickEpochMs: 1786382653673, tzOffsetMinutes: -120,
-  hour: 19, minute: 24, second: 13, year2: 26, weekday: 1, month: 8, date: 10,
-  includeAcks: true, includeCmd10Finish: true,
-  repeatCounts: { cmd9infoOut: 3, cmd9infoIn: 6, cmd9dataOut: 3, cmd9finishOut: 3, cmd10infoOut: 3, cmd10dataOut: 3, cmd10finishOut: 3 },
-});
+const cap1 = buildTransaction({ transactionId: 'cap1', clickEpochMs: 1786382653673, hour: 19, minute: 24, second: 13, cmd9Checksum: 0x7c, includeAcks: true });
 
-const cap2 = buildTransaction({
-  transactionId: 'cap2', clickEpochMs: 1786382894721, tzOffsetMinutes: -120,
-  hour: 19, minute: 28, second: 14, year2: 26, weekday: 1, month: 8, date: 10,
-  includeAcks: false, includeCmd10Finish: true,
-  repeatCounts: { cmd9infoOut: undefined, cmd9dataOut: undefined, cmd9finishOut: undefined, cmd10infoOut: undefined, cmd10dataOut: undefined, cmd10finishOut: undefined },
-});
-cap2.note = 'Only unique out-report bytes were retrieved before the log was cleared for cap3 -- ACK/duplicate/repeat-count detail for this one is not stored (see cap1 and cap3 for that structure, independently confirmed there and in the vendor source).';
+const cap2 = buildTransaction({ transactionId: 'cap2', clickEpochMs: 1786382894721, hour: 19, minute: 28, second: 14, cmd9Checksum: 0x81, includeAcks: false });
+cap2.note = 'Only the out-report bytes for the varying cmd9-dataPacket were independently re-confirmed for this capture; ACKs were not re-fetched before the log was cleared for cap3. All other reports (info-packages, finish, cmd10-data) reuse cap1\'s fully ACK-verified bytes, independently confirmed byte-identical across every capture in this session.';
 
-const cap3 = buildTransaction({
-  transactionId: 'cap3', clickEpochMs: 1786382995802, tzOffsetMinutes: -120,
-  hour: 19, minute: 29, second: 55, year2: 26, weekday: 1, month: 8, date: 10,
-  includeAcks: true, includeCmd10Finish: true,
-  repeatCounts: { cmd9infoOut: 3, cmd9infoIn: 6, cmd9dataOut: 3, cmd9finishOut: 3, cmd10infoOut: 3, cmd10dataOut: 3, cmd10finishOut: 3 },
-});
+const cap3 = buildTransaction({ transactionId: 'cap3', clickEpochMs: 1786382995802, hour: 19, minute: 29, second: 55, cmd9Checksum: 0xab, includeAcks: true });
 cap3.total_raw_hid_events = 54;
 cap3.repeat_structure = {
   repeat_count: 3,
-  note: 'Confirmed both by full raw log analysis (18 out reports = 3 * (3+3)) and by the vendor source: a literal `for (i=0; i<3; i++)` loop wrapping both command groups. Every out report gets exactly 2 identical inputreport ACKs (36 in-entries total): 18 out + 36 in = 54, matching total_raw_hid_events. The cmd9-finish and cmd10-finish reports are byte-identical (same opcode 0x42, same constant length 0x38, same checksum) -- each is sent once per repeat of its own group (3 times), for 6 identical 0x42 sends total across both groups.'
+  note: 'Confirmed both by full raw log analysis (18 out reports = 3 * (3+3)) and by the vendor source: a literal `for (i=0; i<3; i++)` loop wrapping both command groups. Every out report gets exactly 2 identical inputreport ACKs in the full raw log (36 in-entries): 18 out + 36 in = 54, matching total_raw_hid_events. This fixture stores one representative instance of each distinct report (repeats are byte-identical, confirmed), not all 54 raw events.'
 };
 
 for (const [name, obj] of [['cap1', cap1], ['cap2', cap2], ['cap3', cap3]]) {

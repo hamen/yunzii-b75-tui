@@ -8,6 +8,10 @@
 #     64 bytes, has a checksum that recomputes correctly from its own bytes,
 #     has reserved/padding bytes that are actually zero, and (where present)
 #     a decoded_payload that matches the raw bytes
+#   - check-raw-consistency.js: fixtures/cap1.json actually matches
+#     fixtures/raw/cap1-hidlog.json (the minimally processed capture
+#     evidence) byte for byte -- the one check that isn't just the model
+#     checking itself
 # Full cargo fmt/test/clippy wiring lands with the first Rust code, in the
 # follow-up implementation PR.
 set -euo pipefail
@@ -19,3 +23,7 @@ node scripts/verify-checksums.js
 echo
 echo "==> check-coverage.js"
 node scripts/check-coverage.js
+
+echo
+echo "==> check-raw-consistency.js"
+node scripts/check-raw-consistency.js

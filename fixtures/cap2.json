@@ -3,6 +3,7 @@
   "click_timestamp_epoch_ms": 1786382894721,
   "click_timestamp_iso": "2026-08-10T17:28:14.721Z",
   "tz_offset_minutes": -120,
+  "tz_offset_convention": "JS Date.getTimezoneOffset() sense: (UTC - local) in minutes, so -120 means local = UTC+2",
   "connection_mode": "usb-cable",
   "interface_identity": {
     "vendor_id_hex": "0x28E9",
@@ -12,11 +13,11 @@
     "usage_page_hex": "0xFF60",
     "usage_hex": "0x61",
     "serial": null,
-    "note": "Linux-side sysfs report-descriptor bytes/hash and USB topology (bInterfaceNumber, bus/port path) were NOT captured this phase -- not reachable from browser JS. VID+PID+usage-page+usage is the same 4-tuple WebHID itself uses to disambiguate interfaces, which is sufficient to reliably re-open this exact interface; deeper sysfs correlation is deferred to the Rust implementation phase where it is actually actionable on Linux."
+    "note": "webhid_device_index is machine/session-specific noise, NOT a stable identifier -- re-enumerate by usage_page_hex+usage_hex at runtime. Linux-side sysfs report-descriptor bytes/hash and USB topology were NOT captured this phase -- not reachable from browser JS; deferred to the Milestone 1 implementation phase where sysfs is actually reachable."
   },
   "browser": "Chrome (claude-in-chrome automation)",
   "site_asset_version": "index-8Bj3uPPc.js",
-  "time_source": "real wall clock at click time (NOT an injected/overridden Date) -- see PROTOCOL.md for why this phase relies on wall-clock diffing + vendor-source cross-validation instead of a synthetic Date-override capture matrix",
+  "time_source": "real wall clock at click time (NOT an injected/overridden Date). See PROTOCOL.md / PR #1 disposition comment for why this phase relies on wall-clock diffing + vendor-source cross-validation instead of a synthetic Date-override rollover matrix.",
   "reports": [
     {
       "transaction_id": "cap2",
@@ -96,5 +97,5 @@
       "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
     }
   ],
-  "note": "Only unique out-report bytes were retrieved before the log was cleared for cap3 -- ACK/duplicate/repeat-count detail for this one is not stored (see cap1 and cap3 for that structure, independently confirmed there and in the vendor source)."
+  "note": "Only the out-report bytes for the varying cmd9-dataPacket were independently re-confirmed for this capture; ACKs were not re-fetched before the log was cleared for cap3. All other reports (info-packages, finish, cmd10-data) reuse cap1's fully ACK-verified bytes, independently confirmed byte-identical across every capture in this session."
 }
