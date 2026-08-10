@@ -49,7 +49,22 @@ Interface *numbering* (which `hidraw*` node this maps to) varies by
 machine/session — re-enumerate at runtime by usage page/usage, not by a fixed
 device index or node number.
 
-Connection mode tested: USB-C cable. 2.4G dongle / Bluetooth not yet tested.
+**Confirmed from the Linux side too**, not just WebHID (see
+`fields.json`'s `linuxInterfaceIdentity` for full detail): this machine
+exposes the same 4 interfaces as 4 `hidraw` nodes. The config channel's real
+sysfs report descriptor (`0660ff0961a1010962150026ff0095407508810209631500
+26ff00954075089102c0`, SHA-256 `a30039d0…`) decodes to exactly usage page
+`0xFF60` / usage `0x61` with 64-byte input and output reports and no Report
+ID item (confirming the unnumbered-report / `reportId: 0` case) —
+independently matching what WebHID reported, from an entirely different
+vantage point. Its USB interface number is `1`. The product string
+(`YUNZII B75 PRO MAX Keyboard`) matches; the device exposes no serial
+number. `getfacl` confirms the udev rule's ACL correctly grants
+read/write access on all 4 of the device's `hidraw` nodes on this machine,
+not just some.
+
+Connection mode tested: USB-C cable. 2.4G dongle / Bluetooth not yet tested
+— documented as untested, not assumed to work.
 
 ## Outer report structure (generic — applies to every screen command)
 
@@ -169,19 +184,19 @@ Date payload in cap3 (`26,1,8,10`) matches the actual capture date,
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
 **Resolved** — every transmit-required field for "Update device time": HID op
-type (output report), report ID (0), the WebHID-side interface identity
-(VID+PID+usage-page+usage — the same 4-tuple WebHID itself uses to
-disambiguate interfaces), opcode table, outer report structure, both
+type (output report), report ID (0), interface identity from BOTH the WebHID
+side (VID+PID+usage-page+usage) AND the Linux side (sysfs report descriptor,
+hash, USB interface number, ACL — see `fields.json`'s
+`linuxInterfaceIdentity`), opcode table, outer report structure, both
 checksum variants, and the full clock+date payload layout.
 
-**Unresolved** (named, not silently missing): Linux-side interface identity
-(sysfs report-descriptor bytes/hash, USB topology/`bInterfaceNumber`) — not
-reachable from browser JS, deferred to the Milestone 1 phase where it's
-actually actionable; the WebHID-Linux `hidraw` report-ID byte mapping for
-native `write()`; the numeric meaning of the `finish` command's constant
-length byte (`0x38`); opcodes for other screen commands (switch page, clear
-picture/GIF) — identified by name from the vendor source but not yet
-independently HID-captured; picture/GIF upload
+**Unresolved** (named, not silently missing): the WebHID-Linux `hidraw`
+report-ID byte mapping for native `write()` — this specifically needs
+native code to test empirically, sysfs enumeration alone can't answer it;
+the numeric meaning of the `finish` command's constant length byte (`0x38`);
+opcodes for other screen commands (switch page, clear picture/GIF) —
+identified by name from the vendor source but not yet independently
+HID-captured; picture/GIF upload
 payload format entirely (out of scope this phase).
 
 ## What's next (out of scope for this PR)

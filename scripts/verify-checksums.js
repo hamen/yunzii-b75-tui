@@ -52,4 +52,29 @@ assertEqual('M [year=26,weekday=1,month=8,date=10]', outerChecksum8(0x41, 4, [26
 // payload -- zero actual payload bytes are summed.
 assertEqual('finish (opcode 0x42, len 0x38, no payload)', outerChecksum8(0x42, 0x38, []), 0x7a);
 
+// Constructive test (added after round-3 cross-review, grok SF6): build a
+// FULL 64-byte report for a timestamp that was never captured, matching the
+// plan's actual exit rule -- "can a reader construct new bytes from the
+// docs," not just replay known samples.
+function buildReport(opcode, lengthByte, payload) {
+  const bytes = new Array(64).fill(0);
+  bytes[0] = opcode;
+  bytes[3] = lengthByte;
+  if (opcode === 0x40) {
+    const [lo, hi] = outerChecksum16(opcode, lengthByte, payload);
+    bytes[4] = lo; bytes[5] = hi;
+  } else {
+    bytes[4] = outerChecksum8(opcode, lengthByte, payload);
+  }
+  for (let i = 0; i < payload.length; i++) bytes[7 + i] = payload[i];
+  return bytes;
+}
+
+// An hour/minute/second combination never seen in any capture (23:59:58).
+const neverCapturedP = [23, 59, 58];
+const builtCmd9Data = buildReport(0x41, 3, neverCapturedP);
+assertEqual('constructed report length is 64 bytes', builtCmd9Data.length, 64);
+assertEqual('constructed report checksum for hour=23,min=59,sec=58', builtCmd9Data[4], outerChecksum8(0x41, 3, neverCapturedP));
+assertEqual('constructed report payload round-trips', builtCmd9Data.slice(7, 10), neverCapturedP);
+
 console.log('\nAll checks passed.');

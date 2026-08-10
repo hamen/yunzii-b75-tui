@@ -67,7 +67,35 @@
   },
 
   "transactionStructure": {
-    "note": "One 'Update device time' click = a for-loop of 3 iterations (confirmed in vendor source), each iteration sending: cmd9 infoPackage(0x40) -> cmd9 dataPacket(0x41) -> finish(0x42) -> cmd10 infoPackage(0x40) -> cmd10 dataPacket(0x41) -> finish(0x42). Every outbound report receives exactly 2 identical inputreport ACKs from the device (byte offset 6 flipped 0x00->0x55, otherwise byte-identical to the request)."
+    "note": "One 'Update device time' click = a for-loop of 3 iterations (confirmed in vendor source), each iteration sending: cmd9 infoPackage(0x40) -> cmd9 dataPacket(0x41) -> finish(0x42) -> cmd10 infoPackage(0x40) -> cmd10 dataPacket(0x41) -> finish(0x42). Every outbound report receives exactly 2 identical inputreport ACKs from the device (byte offset 6 flipped 0x00->0x55, otherwise byte-identical to the request) -- see rawEventCounts below for the counted evidence behind \"exactly 2\", not just prose."
+  },
+
+  "rawEventCounts": {
+    "source": "cap3 session, full window.__hidLog for one click (54 raw HID events), counted directly (not sampled) before deduplication into fixtures/cap3.json's representative-per-type entries",
+    "outCounts": { "cmd9-infoPackage(0x40)": 3, "cmd9-dataPacket(0x41)": 3, "finish(0x42)_total_both_groups": 6, "cmd10-infoPackage(0x40)": 3, "cmd10-dataPacket(0x41)": 3 },
+    "inCounts": { "cmd9-infoPackage(0x40)_ACK": 6, "cmd9-dataPacket(0x41)_ACK": 6, "finish(0x42)_ACK_total_both_groups": 12, "cmd10-infoPackage(0x40)_ACK": 6, "cmd10-dataPacket(0x41)_ACK": 6 },
+    "arithmeticCheck": "sum(outCounts) = 3+3+6+3+3 = 18; sum(inCounts) = 6+6+12+6+6 = 36; 18+36 = 54, matching the raw log's total event count exactly -- every out report received exactly 2 in ACKs (inCount = 2 * outCount for every report type)."
+  },
+
+  "linuxInterfaceIdentity": {
+    "note": "Obtained directly via Linux shell access on the capture machine (not from browser JS -- the earlier draft of this phase incorrectly deferred this as unreachable; it only required a local shell, which was available all along).",
+    "configChannel": {
+      "hidrawNode": "/dev/hidraw5 (this machine, 2026-08-10 -- node numbers are not stable across reboots/replugs; re-identify by usage page/usage + descriptor hash, not by number)",
+      "usbInterfaceNumber": 1,
+      "usbDevpath": "/devices/pci0000:00/0000:00:08.1/0000:0c:00.3/usb5/5-1/5-1.3/5-1.3.1/5-1.3.1:1.1",
+      "reportDescriptorHex": "0660ff0961a1010962150026ff009540750881020963150026ff00954075089102c0",
+      "reportDescriptorSha256": "a30039d0de625e647b57a9a612acd6eeb82131ad7402849ed64136cda91f0843",
+      "decodedDescriptor": "Usage Page 0xFF60, Usage 0x61, Collection(Application): Usage 0x62 Input(count=64,size=8,data/var/abs), Usage 0x63 Output(count=64,size=8,data/var/abs). No Report ID item present -- confirms this is an unnumbered-report interface, consistent with WebHID's reportId:0.",
+      "productString": "YUNZII B75 PRO MAX Keyboard",
+      "serial": null,
+      "aclConfirmed": "getfacl shows `user:ivan:rw-` on /dev/hidraw5 -- the udev rule (VID 28E9) grants uaccess correctly on this interface, confirmed for all 4 of the device's hidraw nodes on this machine, not just some (an earlier plan-review round had flagged inconsistent ACL as a risk based on partial evidence; re-checked and it's uniform here)."
+    },
+    "allFourInterfaces": [
+      { "hidrawNode": "hidraw4", "usbInterfaceNumber": 0, "usagePage": "0x0001", "usage": "0x0006", "role": "standard keyboard (Generic Desktop / Keyboard)" },
+      { "hidrawNode": "hidraw5", "usbInterfaceNumber": 1, "usagePage": "0xFF60", "usage": "0x0061", "role": "vendor config channel -- THIS is the one used for screen control" },
+      { "hidrawNode": "hidraw7", "usbInterfaceNumber": 2, "usagePage": "0x0001 (+ consumer page 0x0C)", "usage": "0x0002 (mouse) + consumer controls", "role": "mouse + consumer-control combo interface" },
+      { "hidrawNode": "hidraw8", "usbInterfaceNumber": 3, "usagePage": "0xFF31", "usage": "0x0074", "role": "vendor-defined, input-only, 32-byte reports -- purpose not investigated, not used by screen control" }
+    ]
   },
 
   "unresolved": [
@@ -86,10 +114,6 @@
     {
       "item": "WebHID sendReport(reportId, data) to Linux hidraw write() byte mapping -- does a native write() to /dev/hidrawX need a leading report-ID byte (0x00) prepended before these 64 bytes, given the device declares report ID 0 as a NUMBERED report (not the unnumbered/no-report-ID case)?",
       "tried": "not testable from browser JS -- WebHID's sendReport API always excludes the report ID from its `data` argument by design, regardless of how Linux's hidraw treats report ID 0. This is a Linux-side kernel/driver detail that can only be resolved empirically once native code exists to try both forms against real hardware. Left for the Milestone 1 implementation phase."
-    },
-    {
-      "item": "Linux-side interface correlation beyond VID+PID+usage-page+usage (sysfs report-descriptor bytes/hash, USB topology / bInterfaceNumber, product string, serial)",
-      "tried": "not reachable from browser JS (no filesystem/sysfs access from a web page). The VID+PID+usage-page+usage 4-tuple already recorded is the same signature WebHID itself uses internally to disambiguate interfaces via requestDevice filters, and is expected to be sufficient to reliably re-open this exact interface from Rust. Deeper sysfs correlation (udevadm, /sys/class/hidraw/*/device/report_descriptor) is deferred to the Milestone 1 implementation phase, where it's actually actionable on this Linux machine."
     },
     {
       "item": "2.4G dongle and Bluetooth connection modes -- whether the config interface is present/functional over either",

@@ -76,11 +76,16 @@ for (const file of fixtureFiles) {
 
     // 5. reserved bytes actually zero, status byte is 0x00 or 0x55, padding beyond length is zero
     if (bytes[1] !== 0 || bytes[2] !== 0) fail(`${label}: reserved offsets 1-2 not zero`);
+    // 0x41/0x42 have a single reserved byte at offset 5 (0x40's offset 5 is the checksum's high byte, not reserved).
+    if (opcodeHex !== '0x40' && bytes[5] !== 0) fail(`${label}: reserved offset 5 not zero (0x${bytes[5].toString(16)})`);
     if (report.direction === 'out' && bytes[6] !== 0x00) fail(`${label}: outbound status byte should be 0x00, got 0x${bytes[6].toString(16)}`);
     if (report.direction === 'in' && bytes[6] !== 0x55) fail(`${label}: inbound ACK status byte should be 0x55, got 0x${bytes[6].toString(16)}`);
     for (let i = 7 + length; i < 64; i++) {
       if (bytes[i] !== 0) { fail(`${label}: padding byte at offset ${i} is not zero`); break; }
     }
+
+    // 5a. finish (0x42) length byte is always the constant 0x38
+    if (opcodeHex === '0x42' && length !== 0x38) fail(`${label}: finish report length should be constant 0x38, got 0x${length.toString(16)}`);
 
     // 5b. info-package (0x40) constant literals for known commands
     if (opcodeHex === '0x40') {
