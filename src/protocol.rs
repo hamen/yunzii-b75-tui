@@ -49,10 +49,21 @@ pub const CMD15_INFO_PAYLOAD: [u8; 7] = [165, 90, 15, 0, 0, 195, 65];
 /// The TFT page a `switch-page` command switches to. A typed enum rather
 /// than a raw `u8` command byte, so an invalid page value is unrepresentable
 /// instead of a runtime check.
+///
+/// `Gif`'s wire bytes (`CMD15_INFO_PAYLOAD`) are resolved and correct --
+/// proven byte-identical to the vendor's own tool -- but `main.rs`'s CLI
+/// deliberately does not expose a way to construct `Page::Gif` (round-3
+/// cross-review, codex Blocker, PR #3): neither this repo's command nor the
+/// vendor's own produces a visible page switch under real hardware
+/// conditions, so shipping it as a CLI command would ship something that
+/// doesn't do what it says. The variant and its tests stay here as the
+/// documented, correct wire-format layer for whenever the missing
+/// operation is found (`fields.json`'s `unresolved`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Home,
     Picture,
+    #[allow(dead_code)]
     Gif,
 }
 

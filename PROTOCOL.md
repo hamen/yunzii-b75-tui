@@ -245,30 +245,39 @@ page, were both a clean no-op (no error). `clear-picture` was visually
 confirmed to remove the picture from the screen, and running it again on
 an already-empty slot was a clean no-op.
 
-**`switch-page gif` round 2 update**: round-1 review (codex Blocker,
-cursor Should-fix) correctly flagged that the round-1 hardware run had no
-GIF on the device, so `switch-page gif`'s "no visible change" couldn't be
-distinguished from an actual bug. To resolve this properly (not just argue
-about severity), a real disposable test GIF was uploaded to the device via
-the vendor's own browser tool (this repo has no upload command yet — GIF
-upload is out of scope, see `unresolved` below) and saved successfully.
-`switch-page gif` was then run via this repo's native CLI **twice** —
-still no visible change, screen stayed on whatever page was already
-showing. To rule out a bug in this repo's own cmd15 bytes as the cause,
-the SAME "Switch to the GIF page" button was then clicked directly in the
-vendor's own official tool, with `scripts/capture-hook.js` recording the
-actual bytes sent: **`40 00 00 07 59 02 00 a5 5a 0f 00 00 c3 41 00...`**,
-byte-for-byte identical to `CMD15_INFO_PAYLOAD` — and the vendor's own
-tool **also** failed to switch the display. This is decisive: this repo's
-`switch-page gif` sends exactly what the vendor's own reference
-implementation sends, and neither one visually switches to the GIF page
-under these real conditions (GIF present, sent via HID, keyboard
-otherwise idle). This is a device/firmware behavior this repo's protocol
-layer cannot influence — not a wire-format bug in Milestone 2 — but *why*
+**"Switch to the GIF page" (cmd15) — investigated in round 2, deferred in
+round 3**: round-1 review (codex Blocker, cursor Should-fix) correctly
+flagged that the round-1 hardware run had no GIF on the device, so a "no
+visible change" result couldn't be distinguished from an actual bug. To
+resolve this properly (not just argue about severity), a real disposable
+test GIF was uploaded to the device via the vendor's own browser tool
+(this repo has no upload command yet — GIF upload is out of scope, see
+`unresolved` below) and saved successfully. Sending cmd15 via this repo's
+own builder was then tried **twice** — still no visible change, screen
+stayed on whatever page was already showing. To rule out a bug in this
+repo's own cmd15 bytes as the cause, the SAME "Switch to the GIF page"
+button was then clicked directly in the vendor's own official tool, with
+`scripts/capture-hook.js` recording the actual bytes sent: **`40 00 00 07
+59 02 00 a5 5a 0f 00 00 c3 41 00...`**, byte-for-byte identical to
+`CMD15_INFO_PAYLOAD` — and the vendor's own tool **also** failed to switch
+the display. This is decisive: this repo's cmd15 bytes are exactly what
+the vendor's own reference implementation sends, and neither one visually
+switches to the GIF page under these real conditions (GIF present, sent
+via HID, keyboard otherwise idle). This is a device/firmware behavior this
+repo's protocol layer cannot influence — not a wire-format bug — but *why*
 the display doesn't switch (needs to be set as "startup animation" first?
 needs a physical button press to cycle screens? something else?) is not
-understood, and is recorded as a new `unresolved` item rather than
-guessed at.
+understood.
+
+**Decision (round 3, codex Blocker)**: shipping `switch-page gif` as a CLI
+command would ship something that sends a correct, ACK'd command but
+doesn't do what its name says — the same half-understood-shipping trap
+"Clear GIF" was already kept out of this milestone for. `Page::Gif` and
+`CMD15_INFO_PAYLOAD` stay in `protocol.rs`, fully resolved and tested, but
+`main.rs`'s `switch-page` CLI only accepts `home`/`picture`. `gif` is now
+a named, evidenced `unresolved` entry in `fields.json`, the same pattern
+as "Clear GIF," for a follow-up milestone to pick up once the missing
+operation is found.
 
 **Whether `clear-picture` leaves a separately-stored GIF untouched
 remains untested** — not specific to `clear-picture`: since the GIF page
@@ -301,23 +310,31 @@ hash, USB interface number, ACL — see `fields.json`'s
 `linuxInterfaceIdentity`), opcode table, outer report structure, both
 checksum variants, the full clock+date payload layout, AND (as of Milestone
 1) the native hidraw write/read byte layout and real ACK count, above.
-**As of Milestone 2**: page-switch (home/picture/gif, cmd 11/13/15) and
-clear-picture (cmd 14), above.
+**As of Milestone 2**: page-switch bytes for all of home/picture/gif (cmd
+11/13/15) and clear-picture (cmd 14), above — cmd15's bytes are resolved
+even though it's not shipped as a CLI command (see below).
 
 **Unresolved** (named, not silently missing): the numeric meaning of the
 `finish` command's constant length byte (`0x38`); "Clear GIF" (cmd 18/19) —
 identified and its checksums verified, but 2 trailing payload bytes have
-unknown meaning, so it's not shipped as a CLI command (see the section
-above and `fields.json`); picture/GIF upload payload format entirely (out
-of scope so far).
+unknown meaning, so it's not shipped as a CLI command; **why "switch to
+the GIF page" (cmd15) doesn't visually switch the TFT**, even with bytes
+proven identical to the vendor's own tool — so `switch-page` only accepts
+`home`/`picture`, not `gif` (see the section above and `fields.json`);
+whether `clear-picture` affects a stored GIF, blocked on the same GIF-page
+question; picture/GIF upload payload format entirely (out of scope so
+far).
 
 ## What's next
 
-Milestone 1 (`set-time`) and Milestone 2 (page-switch, clear-picture) ship
-the Rust CLI for these commands, see `README.md`. What's left: "Clear GIF"
-(needs another capture pass to resolve its trailing bytes), a `ratatui`
-screen (once there's more than one action worth navigating between), and
-further milestones for sliders, toggles, and image/GIF upload — each needs
-its own discovery pass first, same process as this document. The generic
+Milestone 1 (`set-time`) and Milestone 2 (`switch-page home`/`picture`,
+`clear-picture`) ship the Rust CLI for these commands, see `README.md`.
+What's left: the GIF-page display mystery (cmd15's bytes are correct but
+something else is needed to make the page actually show — try "set as
+startup animation" or a physical button press next), "Clear GIF" (needs
+another capture pass to resolve its trailing bytes), a `ratatui` screen
+(once there's more than one action worth navigating between), and further
+milestones for sliders, toggles, and image/GIF upload — each needs its own
+discovery pass first, same process as this document. The generic
 opcode/checksum/report-structure model above should carry over directly;
 only the opcode-specific payload layout will differ per command.

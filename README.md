@@ -31,15 +31,18 @@ USB ID 28e9:31c8  GDMicroelectronics YUNZII B75 PRO MAX Keyboard
 ## 🗺️ Status
 
 **⏰ `set-time`, 🖼️ `switch-page`, and 🧹 `clear-picture` work!** Their
-protocols are fully decoded (see `PROTOCOL.md`) with native CLI commands for
-each. `switch-page home` and `switch-page picture` are visually confirmed on
-real hardware; `switch-page gif` was sent and cleanly ACK'd but **not**
-visually confirmed (the test device has no GIF uploaded) — see
-`PROTOCOL.md` for the honest caveat. No `ratatui` screen yet — CLI-only,
-done well. "Clear GIF" is decoded-but-deferred (2 trailing payload bytes not
-yet understood — see `PROTOCOL.md`). Sliders, toggles, and image/GIF upload
-aren't implemented yet; each gets its own reverse-engineering pass first,
-same process as `set-time` below. 🚧
+protocols are fully decoded (see `PROTOCOL.md`) with native CLI commands.
+`switch-page home` and `switch-page picture` are visually confirmed on real
+hardware. `switch-page` does **not** have a `gif` option: cmd15's bytes are
+resolved and proven byte-identical to the vendor's own tool, but neither
+this repo's command nor the vendor's own actually switches the TFT to the
+GIF page (tested with a real GIF uploaded) — some other operation is
+required and not yet known, so it's decoded-but-deferred rather than
+shipped not doing what it says (see `PROTOCOL.md`). "Clear GIF" is
+similarly decoded-but-deferred (2 trailing payload bytes not yet
+understood). No `ratatui` screen yet — CLI-only, done well. Sliders,
+toggles, and image/GIF upload aren't implemented yet; each gets its own
+reverse-engineering pass first, same process as `set-time` below. 🚧
 
 ---
 
@@ -51,7 +54,7 @@ sudo cp udev/99-yunzii-b75.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 # unplug and replug the keyboard, then:
 ./target/release/yunzii-b75-tui set-time
-./target/release/yunzii-b75-tui switch-page home    # or: picture, gif
+./target/release/yunzii-b75-tui switch-page home    # or: picture (gif not shipped, see Status)
 ./target/release/yunzii-b75-tui clear-picture
 ```
 

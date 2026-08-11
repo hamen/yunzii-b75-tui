@@ -18,11 +18,24 @@ struct Cli {
 /// clap-facing page selector -- kept separate from `protocol::Page` so
 /// `protocol.rs` stays CLI-agnostic (pure wire-format code, no clap
 /// dependency); `PageArg::into()` maps 1:1 to `protocol::Page`.
+///
+/// `Gif` is deliberately NOT a variant here (round-3 cross-review, codex
+/// Blocker, PR #3): `protocol::Page::Gif` / cmd15's bytes are proven
+/// correct (byte-identical to the vendor's own tool, see PROTOCOL.md), but
+/// neither this repo's CLI nor the vendor's own tool actually switches the
+/// TFT to the GIF page under real hardware conditions -- some other,
+/// unknown operation is required first. Shipping a CLI command that sends
+/// a correct, ACK'd command but doesn't do what its name says is the same
+/// half-understood-shipping trap "Clear GIF" (cmd18/19) was already kept
+/// out of this milestone for. `protocol::Page::Gif` and
+/// `build_page_switch_sequence`'s Gif handling stay in `protocol.rs` --
+/// the wire format IS resolved -- just not wired up to a CLI subcommand
+/// until the missing operation is found (see `fields.json`'s
+/// `unresolved` entry).
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum PageArg {
     Home,
     Picture,
-    Gif,
 }
 
 impl From<PageArg> for protocol::Page {
@@ -30,7 +43,6 @@ impl From<PageArg> for protocol::Page {
         match arg {
             PageArg::Home => protocol::Page::Home,
             PageArg::Picture => protocol::Page::Picture,
-            PageArg::Gif => protocol::Page::Gif,
         }
     }
 }
@@ -47,11 +59,13 @@ enum Commands {
         #[arg(long)]
         debug_no_prefix: bool,
     },
-    /// Switch the TFT screen to the given page.
+    /// Switch the TFT screen to the given page (home or picture -- gif is
+    /// decoded but deferred, see PROTOCOL.md).
     SwitchPage { page: PageArg },
     /// Clear the currently-displayed picture. Whether this affects a
-    /// separately-stored GIF was not tested (see PROTOCOL.md) -- the
-    /// keyboard used for hardware verification had no GIF uploaded.
+    /// separately-stored GIF was not tested (see PROTOCOL.md) -- reaching
+    /// the GIF page to check is itself an unresolved problem, not
+    /// something specific to this command.
     ClearPicture,
 }
 
@@ -197,13 +211,13 @@ mod cli_tests {
         ));
     }
 
+    // Round-3 cross-review (codex Blocker, PR #3): `gif` is deliberately not
+    // a valid `switch-page` argument -- see `PageArg`'s doc comment. This
+    // locks that deferral as a test, not just a comment that could drift.
     #[test]
-    fn parses_switch_page_gif() {
-        let cli = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", "gif"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Commands::SwitchPage { page: PageArg::Gif }
-        ));
+    fn rejects_gif_as_a_switch_page_argument() {
+        let result = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", "gif"]);
+        assert!(result.is_err(), "gif must be rejected, not a valid page");
     }
 
     #[test]
@@ -240,18 +254,20 @@ mod cli_tests {
             protocol::Page::from(PageArg::Picture),
             protocol::Page::Picture
         );
-        assert_eq!(protocol::Page::from(PageArg::Gif), protocol::Page::Gif);
     }
 
     // Plan (Milestone 2, step 6) explicitly called for CLI dispatch tests
-    // asserting home->11, picture->13, gif->15 as inner cmd BYTES, not just
-    // that PageArg maps to the right protocol::Page variant -- this closes
-    // that gap by inspecting the actual wire byte the parsed CLI arg
-    // produces (round-1 cross-review, cursor SF3, PR #3).
+    // asserting home->11, picture->13 as inner cmd BYTES, not just that
+    // PageArg maps to the right protocol::Page variant -- this closes that
+    // gap by inspecting the actual wire byte the parsed CLI arg produces
+    // (round-1 cross-review, cursor SF3, PR #3). `gif`->15 dropped from this
+    // table in round 3: gif is no longer a valid CLI argument (see
+    // `rejects_gif_as_a_switch_page_argument`), though `protocol.rs`'s own
+    // fixture tests still cover cmd15's bytes directly.
     #[test]
     fn cli_page_name_maps_to_correct_inner_cmd_byte() {
         const CMD_BYTE_OFFSET: usize = 9; // payload = report[7..], cmd = payload[2]
-        for (page_name, expected_cmd_byte) in [("home", 11u8), ("picture", 13), ("gif", 15)] {
+        for (page_name, expected_cmd_byte) in [("home", 11u8), ("picture", 13)] {
             let cli = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", page_name]).unwrap();
             let Commands::SwitchPage { page } = cli.command else {
                 panic!("expected SwitchPage");
