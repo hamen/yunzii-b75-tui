@@ -30,11 +30,19 @@ USB ID 28e9:31c8  GDMicroelectronics YUNZII B75 PRO MAX Keyboard
 
 ## 🗺️ Status
 
-**⏰ `set-time` works!** The clock/date protocol is fully decoded (see
-`PROTOCOL.md`) and there's a native CLI for it. No `ratatui` screen yet —
-just this one command, done well. Sliders, toggles, and image/GIF upload
-aren't implemented yet; each gets its own reverse-engineering pass first,
-same process as `set-time` below. 🚧
+**⏰ `set-time`, 🖼️ `switch-page`, and 🧹 `clear-picture` work!** Their
+protocols are fully decoded (see `PROTOCOL.md`) with native CLI commands.
+`switch-page home` and `switch-page picture` are visually confirmed on real
+hardware. `switch-page` does **not** have a `gif` option: cmd15's bytes are
+resolved and proven byte-identical to the vendor's own tool, but neither
+this repo's command nor the vendor's own actually switches the TFT to the
+GIF page (tested with a real GIF uploaded) — some other operation is
+required and not yet known, so it's decoded-but-deferred rather than
+shipped not doing what it says (see `PROTOCOL.md`). "Clear GIF" is
+similarly decoded-but-deferred (2 trailing payload bytes not yet
+understood). No `ratatui` screen yet — CLI-only, done well. Sliders,
+toggles, and image/GIF upload aren't implemented yet; each gets its own
+reverse-engineering pass first, same process as `set-time` below. 🚧
 
 ---
 
@@ -46,7 +54,14 @@ sudo cp udev/99-yunzii-b75.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 # unplug and replug the keyboard, then:
 ./target/release/yunzii-b75-tui set-time
+./target/release/yunzii-b75-tui switch-page home    # or: picture (gif not shipped, see Status)
+./target/release/yunzii-b75-tui clear-picture
 ```
+
+`clear-picture` sends 32 reports (16 repeats); like `set-time`, a failure
+partway through aborts the whole transaction rather than silently
+continuing, but could leave the picture only partially cleared — the same
+risk class as `set-time`'s partial-clock-update risk, not a new one.
 
 The udev rule grants access to **all** of the keyboard's `hidraw`
 interfaces for this VID/PID (there's no finer-grained udev match available),
@@ -93,8 +108,11 @@ guessing at the byte format blind, this repo:
 
 See `PROTOCOL.md` for the decoded format, `fixtures/` for the decoded
 per-capture evidence (checksums and structure independently re-verified
-against the real device), and `fixtures/raw/` for a minimally processed
-capture log that `fixtures/cap1.json` is checked against byte-for-byte.
+against the real device), and `fixtures/raw/` for minimally processed
+capture logs — `scripts/check-raw-consistency.js` checks each of
+`fixtures/cap1.json`, `fixtures/page-switch.json`, and
+`fixtures/clear-picture.json` against its own raw log byte-for-byte, in
+exact order.
 
 ---
 

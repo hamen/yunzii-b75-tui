@@ -8,9 +8,10 @@
 #     64 bytes, has a checksum that recomputes correctly from its own bytes,
 #     has reserved/padding bytes that are actually zero, and (where present)
 #     a decoded_payload that matches the raw bytes
-#   - check-raw-consistency.js: fixtures/cap1.json actually matches
-#     fixtures/raw/cap1-hidlog.json (the minimally processed capture
-#     evidence) byte for byte -- the one check that isn't just the model
+#   - check-raw-consistency.js: fixtures/cap1.json, fixtures/page-switch.json,
+#     and fixtures/clear-picture.json each actually match their own
+#     fixtures/raw/*.json (the minimally processed capture evidence) byte
+#     for byte, in exact order -- the one check that isn't just the model
 #     checking itself
 # Plus, since Milestone 1 (native set-time): cargo fmt/test/clippy for the
 # Rust binary. Requires a Rust toolchain (https://rustup.rs) to be installed.

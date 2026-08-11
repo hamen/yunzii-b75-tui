@@ -1,0 +1,150 @@
+{
+  "transaction_id": "page-switch",
+  "connection_mode": "usb-cable",
+  "interface_identity": {
+    "vendor_id_hex": "0x28E9",
+    "product_id_hex": "0x31C8",
+    "product_name": "YUNZII B75 PRO MAX Keyboard",
+    "webhid_device_index": 2,
+    "usage_page_hex": "0xFF60",
+    "usage_hex": "0x61",
+    "serial": null,
+    "note": "webhid_device_index is machine/session-specific noise, NOT a stable identifier -- re-enumerate by usage_page_hex+usage_hex at runtime. Linux-side sysfs report-descriptor bytes/hash and USB topology were NOT captured this phase -- not reachable from browser JS; deferred to the Milestone 1 implementation phase where sysfs is actually reachable."
+  },
+  "browser": "Chrome (claude-in-chrome automation)",
+  "note": "All 3 \"Equipment setup\" page-switch buttons (homepage/picture/gif), captured live this session (2026-08-11) via scripts/capture-hook.js. Each is a 2-report sequence: info-package(0x40) + finish(0x42), no data-packet -- unlike set-time, none of these commands send a follow-up 0x41 report.",
+  "reports": [
+    {
+      "transaction_id": "page-switch",
+      "command_index": 0,
+      "command_name": "cmd11-switch-homepage-infoPackage",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 07 53 01 00 a5 5a 0b 00 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "page-switch",
+      "command_index": 0,
+      "command_name": "cmd11-switch-homepage-infoPackage-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 07 53 01 55 a5 5a 0b 00 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "page-switch",
+      "command_index": 0,
+      "command_name": "cmd11-switch-homepage-finish",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "page-switch",
+      "command_index": 0,
+      "command_name": "cmd11-switch-homepage-finish-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "page-switch",
+      "command_index": 1,
+      "command_name": "cmd13-switch-picture-page-infoPackage",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 07 36 02 00 a5 5a 0d 00 00 03 e0 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "page-switch",
+      "command_index": 1,
+      "command_name": "cmd13-switch-picture-page-infoPackage-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 07 36 02 55 a5 5a 0d 00 00 03 e0 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "page-switch",
+      "command_index": 1,
+      "command_name": "cmd13-switch-picture-page-finish",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "page-switch",
+      "command_index": 1,
+      "command_name": "cmd13-switch-picture-page-finish-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "page-switch",
+      "command_index": 2,
+      "command_name": "cmd15-switch-gif-page-infoPackage",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 07 59 02 00 a5 5a 0f 00 00 c3 41 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "page-switch",
+      "command_index": 2,
+      "command_name": "cmd15-switch-gif-page-infoPackage-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 07 59 02 55 a5 5a 0f 00 00 c3 41 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "page-switch",
+      "command_index": 2,
+      "command_name": "cmd15-switch-gif-page-finish",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "page-switch",
+      "command_index": 2,
+      "command_name": "cmd15-switch-gif-page-finish-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    }
+  ]
+}

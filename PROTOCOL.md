@@ -5,10 +5,12 @@ Machine-readable source of truth: `fields.json`. Decoded per-capture evidence:
 re-verified real byte sequences — see that script's header for exactly how —
 with zero-padding computed programmatically, never hand-typed, after an
 earlier version of this file had a real transcription bug in the padding).
-`fixtures/raw/cap1-hidlog.json` is a minimally processed capture log;
-`scripts/check-raw-consistency.js` (part of `bin/ci`) asserts `fixtures/
-cap1.json` matches it byte-for-byte, so the decode is checked against real
-captured evidence, not only against itself. Capture tooling:
+`fixtures/raw/*.json` are minimally processed capture logs;
+`scripts/check-raw-consistency.js` (part of `bin/ci`) asserts each of
+`fixtures/cap1.json`, `fixtures/page-switch.json`, and
+`fixtures/clear-picture.json` matches its own raw log byte-for-byte, in
+exact order, so the decode is checked against real captured evidence, not
+only against itself. Capture tooling:
 `scripts/capture-hook.js`, `scripts/verify-checksums.js`,
 `scripts/vendor-source-excerpt.js`, `scripts/check-coverage.js`,
 `scripts/check-raw-consistency.js` (all three checks run in `bin/ci`).
@@ -115,7 +117,8 @@ checksum = (opcode + length + sum(payload_bytes))
 ```
 
 Verified exactly against all 3 live captures plus the vendor's own hardcoded
-constants — see `scripts/verify-checksums.js` (9/9 checks pass).
+constants — see `scripts/verify-checksums.js` (covers cmd 9/10/11/13/14/15,
+plus the deferred cmd18/19, all checks pass).
 
 There is a **separate, unrelated** CRC-16/ARC function in the vendor source
 (polynomial `0xA001` reflected, init `0xFFFF`) used only to precompute two
@@ -214,6 +217,90 @@ encoding logic being unit-tested against every day of the week
 evidence than a visual check, and intentionally not folded into the same
 "confirmed" claim as hour/minute/date.
 
+## Page switch and clear-picture — resolved (Milestone 2)
+
+Four more commands, live HID-captured on 2026-08-11 (`fixtures/page-switch.json`,
+`fixtures/clear-picture.json`, and their `fixtures/raw/` evidence):
+
+| Button | Inner cmd | Sequence | Info-package payload |
+|---|---|---|---|
+| Switch to the homepage | 11 | infoPackage → finish (2 reports) | `[165,90,11,0,0,2,0]` |
+| Switch to the picture page | 13 | infoPackage → finish (2 reports) | `[165,90,13,0,0,3,224]` |
+| Switch to the GIF page | 15 | infoPackage → finish (2 reports) | `[165,90,15,0,0,195,65]` |
+| Clear the picture | 14 | infoPackage → finish, **repeated 16x** (32 reports) | `[165,90,14,0,0,3,16]` |
+
+None of these send a follow-up `0x41` data-packet — unlike `set-time`, the
+info-package alone carries the whole command, and `finish` (the same
+constant `38 7a 00...` bytes as `set-time`'s) closes it out. The 16x repeat
+for "Clear the picture" matches the vendor source's literal
+`for(a=0;a<16;a++)` loop and was independently confirmed by counting the
+full raw HID log for one click, not just trusting the source.
+
+**Real-hardware verification (Milestone 2, 2026-08-11)**: `switch-page
+home` and `switch-page picture` were visually confirmed on the physical
+TFT — the screen genuinely changed to the expected page each time,
+including switching correctly right after a `clear-picture` run.
+`switch-page home` and `switch-page picture`, each while already on that
+page, were both a clean no-op (no error). `clear-picture` was visually
+confirmed to remove the picture from the screen, and running it again on
+an already-empty slot was a clean no-op.
+
+**"Switch to the GIF page" (cmd15) — investigated in round 2, deferred in
+round 3**: round-1 review (codex Blocker, cursor Should-fix) correctly
+flagged that the round-1 hardware run had no GIF on the device, so a "no
+visible change" result couldn't be distinguished from an actual bug. To
+resolve this properly (not just argue about severity), a real disposable
+test GIF was uploaded to the device via the vendor's own browser tool
+(this repo has no upload command yet — GIF upload is out of scope, see
+`unresolved` below) and saved successfully. Sending cmd15 via this repo's
+own builder was then tried **twice** — still no visible change, screen
+stayed on whatever page was already showing. To rule out a bug in this
+repo's own cmd15 bytes as the cause, the SAME "Switch to the GIF page"
+button was then clicked directly in the vendor's own official tool, with
+`scripts/capture-hook.js` recording the actual bytes sent: **`40 00 00 07
+59 02 00 a5 5a 0f 00 00 c3 41 00...`**, byte-for-byte identical to
+`CMD15_INFO_PAYLOAD` — and the vendor's own tool **also** failed to switch
+the display. This is decisive: this repo's cmd15 bytes are exactly what
+the vendor's own reference implementation sends, and neither one visually
+switches to the GIF page under these real conditions (GIF present, sent
+via HID, keyboard otherwise idle). This is a device/firmware behavior this
+repo's protocol layer cannot influence — not a wire-format bug — but *why*
+the display doesn't switch (needs to be set as "startup animation" first?
+needs a physical button press to cycle screens? something else?) is not
+understood.
+
+**Decision (round 3, codex Blocker)**: shipping `switch-page gif` as a CLI
+command would ship something that sends a correct, ACK'd command but
+doesn't do what its name says — the same half-understood-shipping trap
+"Clear GIF" was already kept out of this milestone for. `Page::Gif` and
+`CMD15_INFO_PAYLOAD` stay in `protocol.rs`, fully resolved and tested, but
+`main.rs`'s `switch-page` CLI only accepts `home`/`picture`. `gif` is now
+a named, evidenced `unresolved` entry in `fields.json`, the same pattern
+as "Clear GIF," for a follow-up milestone to pick up once the missing
+operation is found.
+
+**Whether `clear-picture` leaves a separately-stored GIF untouched
+remains untested** — not specific to `clear-picture`: since the GIF page
+itself cannot be visually reached at all in this environment (the finding
+above), there's no way to visually distinguish "GIF is fine but the page
+just doesn't display" from "GIF got corrupted by clear-picture." This
+gates on resolving the GIF-page-display finding first, not on anything in
+`clear-picture`'s own implementation.
+
+**"Clear GIF" is a different, deferred command — not shipped.** It looked
+at first like it might share a handler with "Clear the picture" (the
+vendor's own internal function name, `clearPictureOrGif_loop16x`, implies
+that), but live capture shows it's structurally unrelated: two different
+inner commands (18, then 19), each sent once — no 16x loop — each with a
+9-byte info-package payload (2 bytes longer than every other command here).
+Both fit the established checksum pattern, but 2 trailing bytes on each
+(`[1,0]`) have unknown meaning, and no data-packet is ever sent despite the
+payload's `N` byte looking like it should signal one. See `fields.json`'s
+`unresolved` list for the full detail and what a follow-up capture would
+need to resolve it — deferring an under-understood command rather than
+shipping it on "the checksum matches" is the same discipline `set-time`'s
+still-unexplained `finish` length byte gets.
+
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
 **Resolved** — every transmit-required field for "Update device time": HID op
@@ -223,19 +310,31 @@ hash, USB interface number, ACL — see `fields.json`'s
 `linuxInterfaceIdentity`), opcode table, outer report structure, both
 checksum variants, the full clock+date payload layout, AND (as of Milestone
 1) the native hidraw write/read byte layout and real ACK count, above.
+**As of Milestone 2**: page-switch bytes for all of home/picture/gif (cmd
+11/13/15) and clear-picture (cmd 14), above — cmd15's bytes are resolved
+even though it's not shipped as a CLI command (see below).
 
 **Unresolved** (named, not silently missing): the numeric meaning of the
-`finish` command's constant length byte (`0x38`); opcodes for other screen
-commands (switch page, clear picture/GIF) — identified by name from the
-vendor source but not yet independently HID-captured; picture/GIF upload
-payload format entirely (out of scope so far).
+`finish` command's constant length byte (`0x38`); "Clear GIF" (cmd 18/19) —
+identified and its checksums verified, but 2 trailing payload bytes have
+unknown meaning, so it's not shipped as a CLI command; **why "switch to
+the GIF page" (cmd15) doesn't visually switch the TFT**, even with bytes
+proven identical to the vendor's own tool — so `switch-page` only accepts
+`home`/`picture`, not `gif` (see the section above and `fields.json`);
+whether `clear-picture` affects a stored GIF, blocked on the same GIF-page
+question; picture/GIF upload payload format entirely (out of scope so
+far).
 
 ## What's next
 
-Milestone 1 (this repo's native `set-time` CLI, see `README.md`) already
-ships the Rust implementation for this one command. What's left: a
-`ratatui` screen (once there's more than one action worth navigating
-between), and Milestones 2/3 (sliders, toggles, image/GIF upload) — each
-needs its own discovery pass first, same process as this document. The
-generic opcode/checksum/report-structure model above should carry over
-directly; only the opcode-specific payload layout will differ per command.
+Milestone 1 (`set-time`) and Milestone 2 (`switch-page home`/`picture`,
+`clear-picture`) ship the Rust CLI for these commands, see `README.md`.
+What's left: the GIF-page display mystery (cmd15's bytes are correct but
+something else is needed to make the page actually show — try "set as
+startup animation" or a physical button press next), "Clear GIF" (needs
+another capture pass to resolve its trailing bytes), a `ratatui` screen
+(once there's more than one action worth navigating between), and further
+milestones for sliders, toggles, and image/GIF upload — each needs its own
+discovery pass first, same process as this document. The generic
+opcode/checksum/report-structure model above should carry over directly;
+only the opcode-specific payload layout will differ per command.

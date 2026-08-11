@@ -9,37 +9,72 @@
 const fs = require('fs');
 const path = require('path');
 
-const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'raw', 'cap1-hidlog.json'), 'utf8'));
-const cap1 = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'cap1.json'), 'utf8'));
+const fixturesDir = path.join(__dirname, '..', 'fixtures');
+function load(rel) { return JSON.parse(fs.readFileSync(path.join(fixturesDir, rel), 'utf8')); }
 
 let failures = 0;
 function fail(msg) { console.error(`FAIL: ${msg}`); failures++; }
 function ok(msg) { console.log(`OK:   ${msg}`); }
 
-// Also validate every raw entry is exactly 64 bytes -- the raw file is the
-// ground truth, so if IT ever regresses to 63 bytes, nothing downstream can
-// be trusted.
-for (const e of raw.entries) {
-  const n = e.hex.trim().split(/\s+/).length;
-  if (n !== 64) fail(`raw/cap1-hidlog.json: ${e.dir} ${e.opcode} cmd${e.cmd} is ${n} bytes, expected 64`);
-}
+// Each pair: a raw evidence file (fixtures/raw/*.json) and the polished
+// fixture it must match byte-for-byte AND in exact order. Both files are
+// built (by scripts/build-fixtures.js and the raw-evidence generator
+// respectively) by iterating the same command list in the same order, so a
+// strict index-by-index comparison is the correct check here -- it is also
+// what catches a report silently landing out of sequence, which a
+// filter/multi-match comparison (an earlier version of this script) could
+// not: round-1 cross-review (codex Blocker, PR #3) found that version only
+// asserted "some report with this command/direction/opcode matches
+// somewhere," which passed even for clear-picture's now-fixed evidence gap
+// (only 1 of 16 repeats was stored) without ever checking count or order.
+const PAIRS = [
+  { rawFile: 'raw/cap1-hidlog.json', fixtureFile: 'cap1.json' },
+  { rawFile: 'raw/cap-page-switch-hidlog.json', fixtureFile: 'page-switch.json' },
+  { rawFile: 'raw/cap-clear-picture-hidlog.json', fixtureFile: 'clear-picture.json' },
+];
 
-for (const rawEntry of raw.entries) {
-  const opcode = parseInt(rawEntry.opcode, 16);
-  const match = cap1.reports.find((r) => {
-    const cmdMatches = rawEntry.cmd === 9 ? r.command_name.startsWith('cmd9') : r.command_name.startsWith('cmd10');
-    return cmdMatches && r.direction === rawEntry.dir && parseInt(r.opcode_hex, 16) === opcode;
-  });
-  if (!match) { fail(`no fixtures/cap1.json report matches raw entry ${rawEntry.dir}/${rawEntry.opcode}/cmd${rawEntry.cmd}`); continue; }
-  if (match.payload_hex !== rawEntry.hex) {
-    fail(`fixtures/cap1.json "${match.command_name}" (${match.direction}) does not match raw evidence:\n  raw:     ${rawEntry.hex}\n  fixture: ${match.payload_hex}`);
-  } else {
-    ok(`fixtures/cap1.json "${match.command_name}" (${match.direction}) matches raw capture exactly`);
+for (const { rawFile, fixtureFile } of PAIRS) {
+  const raw = load(rawFile);
+  const fixture = load(fixtureFile);
+
+  // Every raw entry must be exactly 64 bytes -- the raw file is the ground
+  // truth, so if IT ever regresses to 63 bytes, nothing downstream can be
+  // trusted.
+  for (const e of raw.entries) {
+    const n = e.hex.trim().split(/\s+/).length;
+    if (n !== 64) fail(`${rawFile}: ${e.dir} ${e.opcode} cmd${e.cmd} is ${n} bytes, expected 64`);
+  }
+
+  if (raw.entries.length !== fixture.reports.length) {
+    fail(
+      `${rawFile} has ${raw.entries.length} entries but ${fixtureFile} has ${fixture.reports.length} reports -- counts must match exactly (no sampling/summarizing on either side)`
+    );
+    continue;
+  }
+
+  for (let i = 0; i < raw.entries.length; i++) {
+    const rawEntry = raw.entries[i];
+    const report = fixture.reports[i];
+    const rawOpcode = parseInt(rawEntry.opcode, 16);
+    const reportOpcode = parseInt(report.opcode_hex, 16);
+    const label = `${fixtureFile}[${i}] "${report.command_name}" (${report.direction}) vs ${rawFile}[${i}]`;
+
+    if (report.direction !== rawEntry.dir || reportOpcode !== rawOpcode) {
+      fail(
+        `${label}: direction/opcode mismatch at the SAME index -- raw is ${rawEntry.dir}/${rawEntry.opcode}, fixture is ${report.direction}/${report.opcode_hex}. Reports are out of order.`
+      );
+      continue;
+    }
+    if (report.payload_hex !== rawEntry.hex) {
+      fail(`${label}: bytes don't match:\n  raw:     ${rawEntry.hex}\n  fixture: ${report.payload_hex}`);
+    } else {
+      ok(`${label}: matches raw capture exactly, same position`);
+    }
   }
 }
 
 if (failures > 0) {
-  console.error(`\n${failures} failure(s) -- fixtures/cap1.json has drifted from the raw evidence it's supposed to represent.`);
+  console.error(`\n${failures} failure(s) -- a polished fixture has drifted from the raw evidence it's supposed to represent.`);
   process.exit(1);
 }
-console.log('\nfixtures/cap1.json is fully consistent with the raw capture evidence.');
+console.log('\nAll polished fixtures are fully consistent with their raw capture evidence.');

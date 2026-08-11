@@ -1,0 +1,78 @@
+{
+  "_provenance": "Same discipline as fixtures/raw/cap1-hidlog.json (Phase 0): the meaningful bytes (payload arrays, checksum bytes) were read directly off live scripts/capture-hook.js output while clicking each page-switch button on the real keyboard, 2026-08-11 -- never hand-typed as full 64-byte hex strings. This file's bytes are built by an independent script path (not by reading back fixtures/page-switch.json) from those same short arrays, so a bug in scripts/build-fixtures.js's fixture-generation logic would not silently propagate into this file. Zero-padding and the ACK byte[6] flip are both computed programmatically. Checksum bytes here are the REAL values observed on the wire during capture; scripts/check-coverage.js and scripts/verify-checksums.js independently recompute the expected checksum from the outer-report formula and assert it matches these real bytes -- that recomputation, not this file's mere existence, is the actual independence check against the checksum model.",
+  "captured": "2026-08-11, one click each on \"Switch to the homepage\" (cmd11), \"Switch to the picture page\" (cmd13), and \"Switch to the GIF page\" (cmd15), Equipment setup tab -- one info+finish pair captured per button, no data-packet, no repeat loop for any of the three.",
+  "entries": [
+    {
+      "dir": "out",
+      "opcode": "0x40",
+      "cmd": 11,
+      "hex": "40 00 00 07 53 01 00 a5 5a 0b 00 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "in",
+      "opcode": "0x40",
+      "cmd": 11,
+      "hex": "40 00 00 07 53 01 55 a5 5a 0b 00 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "out",
+      "opcode": "0x42",
+      "cmd": 11,
+      "hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "in",
+      "opcode": "0x42",
+      "cmd": 11,
+      "hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "out",
+      "opcode": "0x40",
+      "cmd": 13,
+      "hex": "40 00 00 07 36 02 00 a5 5a 0d 00 00 03 e0 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "in",
+      "opcode": "0x40",
+      "cmd": 13,
+      "hex": "40 00 00 07 36 02 55 a5 5a 0d 00 00 03 e0 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "out",
+      "opcode": "0x42",
+      "cmd": 13,
+      "hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "in",
+      "opcode": "0x42",
+      "cmd": 13,
+      "hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "out",
+      "opcode": "0x40",
+      "cmd": 15,
+      "hex": "40 00 00 07 59 02 00 a5 5a 0f 00 00 c3 41 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "in",
+      "opcode": "0x40",
+      "cmd": 15,
+      "hex": "40 00 00 07 59 02 55 a5 5a 0f 00 00 c3 41 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "out",
+      "opcode": "0x42",
+      "cmd": 15,
+      "hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "in",
+      "opcode": "0x42",
+      "cmd": 15,
+      "hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    }
+  ]
+}
