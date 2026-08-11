@@ -271,9 +271,28 @@ pub const START_TO_DECLARE_DELAY_MS: u64 = 300;
 /// Encodes RGBA bytes as the panel's RGB565, big-endian per pixel.
 ///
 /// `v = (R>>3)<<11 | (G>>2)<<5 | (B>>3)`, emitted as `[v>>8, v&0xFF]`,
-/// row-major, top row first, left to right. Fully transparent pixels are
-/// flattened to black first, matching the vendor's own pre-pass -- it starts
-/// from a transparent-black canvas, so anything with alpha 0 lands on black.
+/// row-major, top row first, left to right.
+///
+/// # Alpha
+///
+/// Only **fully** transparent pixels become black. Partial alpha keeps its
+/// full colour and is otherwise ignored.
+///
+/// That is what the device gets, and it is not premultiplication. The
+/// vendor's picture encoder is
+/// `function te(J){const ae=J.data; ... xe=ae[he], ve=ae[he+1], re=ae[he+2]; ...}`
+/// -- it reads bytes 0-2 and never touches alpha. Its input is a
+/// `getImageData()` from a freshly created canvas with no black fill, and
+/// drawing source-over onto a transparent backdrop leaves the
+/// un-premultiplied colour intact; only a fully transparent pixel reads back
+/// as `(0,0,0,0)`.
+///
+/// A cross-review round called this a bug and asked for `out = src * a`
+/// (PR #4, codex Blocker). That formula came from a sentence in the plan,
+/// not from the device. The `if (data[i+3] === 0)` black pre-pass that does
+/// exist in the vendor bundle belongs to its GIF path, not this one.
+/// `cli_tests::partial_alpha_keeps_full_colour_and_only_alpha_zero_becomes_black`
+/// locks the behaviour.
 ///
 /// Pure function: no image decoding, no I/O, no device.
 pub fn rgb565_encode(rgba: &[u8]) -> Vec<u8> {

@@ -123,8 +123,11 @@ enum Commands {
     /// The image is stretched to the panel's fixed 160x96 with
     /// nearest-neighbour sampling -- the same as the vendor's tool, which
     /// draws with image smoothing switched off. Aspect ratio is not
-    /// preserved. Fully transparent pixels become black. EXIF orientation is
-    /// applied, so photos straight off a phone are not uploaded sideways.
+    /// preserved. Fully transparent pixels become black; partial
+    /// transparency keeps its full colour rather than blending. EXIF
+    /// orientation is applied, so photos straight off a phone are not
+    /// uploaded sideways. Uploading also switches the panel to the picture
+    /// page, so no separate switch-page is needed.
     SetPicture {
         /// Path to a PNG or JPEG file.
         path: PathBuf,
@@ -485,6 +488,119 @@ mod cli_tests {
         assert_eq!(px(5, 5), [0xf8, 0x00]);
         assert_eq!(px(120, 5), [0x07, 0xe0]);
         assert_eq!(px(5, 80), [0x00, 0x1f]);
+    }
+
+    // Cross-review round 1 (codex Should-fix, grok Should-fix 1, PR #4): EXIF
+    // orientation was implemented but never proven to run. If `image` +
+    // `zune-jpeg` silently returned NoTransforms for every file, the feature
+    // and its README promise would be quietly false. This test would fail.
+    //
+    // fixtures/test-exif-rotated.jpg stores a 96x160 image with Orientation=6
+    // ("rotate 90 CW to display"), whose UPRIGHT form is 160x96 with a white
+    // square top-left and a black square bottom-right on mid grey.
+    // Cross-review round 1 (grok Should-fix 2, PR #4): protocol.rs's
+    // `picture_upload_body_matches_the_full_552_report_capture` rebuilds the
+    // stream from pixels it read back OUT of the fixture, so it proves the
+    // packaging (chunking, offsets, lengths, checksums) and nothing about the
+    // encoder. The Node pipeline does check PNG -> reports against hardware,
+    // but that left the RUST encoder unverified end to end.
+    //
+    // This closes it: source PNG -> load_and_encode_picture ->
+    // build_picture_upload_body, compared against every byte of the fixture,
+    // which check-raw-consistency.js separately pins to the real capture. So
+    // the chain from "a file on disk" to "what the vendor's tool put on the
+    // wire" is now unbroken on the Rust side too.
+    #[test]
+    fn encoding_the_source_png_reproduces_the_whole_captured_upload() {
+        let data: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/picture-upload.json")).unwrap();
+        let reports = data["reports"].as_array().unwrap();
+
+        let parse = |hex: &str| -> [u8; 64] {
+            let v: Vec<u8> = hex
+                .split_whitespace()
+                .map(|t| u8::from_str_radix(t, 16).unwrap())
+                .collect();
+            assert_eq!(v.len(), 64);
+            v.try_into().unwrap()
+        };
+
+        let pixels = load_and_encode_picture(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let mut built = vec![protocol::build_picture_upload_start()];
+        built.extend(protocol::build_picture_upload_body(&pixels));
+
+        assert_eq!(built.len(), reports.len(), "report count");
+        for (i, report) in built.iter().enumerate() {
+            let expected = parse(reports[i]["payload_hex"].as_str().unwrap());
+            assert_eq!(
+                report,
+                &expected,
+                "report {i} ({}) differs",
+                reports[i]["command_name"].as_str().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn exif_orientation_is_actually_applied_to_jpegs() {
+        let pixels = load_and_encode_picture(Path::new("fixtures/test-exif-rotated.jpg")).unwrap();
+        assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
+
+        let px = |x: usize, y: usize| {
+            let o = (y * protocol::PANEL_W as usize + x) * 2;
+            u16::from_be_bytes([pixels[o], pixels[o + 1]])
+        };
+        // A stored-orientation read would put these marks on the wrong edges,
+        // and the un-rotated 96x160 source stretched to 160x96 would smear
+        // them across the middle. Both fail these corners.
+        let white = px(12, 8);
+        let black = px(150, 88);
+        assert!(
+            white > 0xf000,
+            "top-left should be white after rotation, got {white:#06x}"
+        );
+        assert!(
+            black < 0x1000,
+            "bottom-right should be black after rotation, got {black:#06x}"
+        );
+        // And the opposite corners must NOT be those marks.
+        assert!(
+            px(150, 8) < 0xf000,
+            "top-right should not be the white mark"
+        );
+        assert!(
+            px(12, 88) > 0x1000,
+            "bottom-left should not be the black mark"
+        );
+    }
+
+    // Cross-review round 1 (codex Blocker, PR #4): codex read the plan's
+    // `out = src*a + 0*(1-a)` line and called partial-alpha handling a bug.
+    // The plan sentence was my own guess; the device does something else.
+    //
+    // The vendor's PICTURE path encodes with:
+    //   function te(J){ const ae=J.data; ... const xe=ae[he], ve=ae[he+1], re=ae[he+2]; ... }
+    // which reads bytes 0-2 and never touches alpha, from a getImageData()
+    // taken off a FRESH (transparent) canvas with no black fill. Drawing
+    // source-over onto transparent preserves the un-premultiplied colour, so
+    // a semi-transparent pixel contributes its FULL RGB, and only a fully
+    // transparent pixel comes back as (0,0,0,0), i.e. black.
+    //
+    // (The `if (data[i+3] === 0)` black pre-pass codex may be thinking of is
+    // real, but it is in the vendor's GIF path, not this one.)
+    //
+    // This test locks that behaviour so a future "fix" toward premultiplying
+    // has to argue with the evidence rather than with a comment.
+    #[test]
+    fn partial_alpha_keeps_full_colour_and_only_alpha_zero_becomes_black() {
+        let red_opaque = protocol::rgb565_encode(&[255, 0, 0, 255]);
+        let red_half = protocol::rgb565_encode(&[255, 0, 0, 128]);
+        let red_gone = protocol::rgb565_encode(&[255, 0, 0, 0]);
+
+        assert_eq!(red_half, red_opaque, "alpha 128 must keep the full colour");
+        assert_eq!(red_gone, vec![0x00, 0x00], "alpha 0 must become black");
+        // If this ever premultiplied, alpha 128 would land near 0x7800.
+        assert_ne!(red_half, vec![0x78, 0x00]);
     }
 
     #[test]

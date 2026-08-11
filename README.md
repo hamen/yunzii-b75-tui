@@ -70,8 +70,12 @@ vendor's tool, which draws with image smoothing switched off. **Aspect ratio
 is not preserved.** Crop or letterbox the file yourself first if that
 matters.
 
-- **Transparency** is flattened onto **black**, matching the vendor.
+- **Fully transparent** pixels become **black**. Partial transparency keeps
+  its full colour — the alpha value is discarded, not blended, which is what
+  the vendor does too. A logo with soft edges shows those edges at full
+  colour against black; pre-flatten it yourself if you want them faded.
 - **EXIF orientation** is applied, so phone photos are not uploaded sideways.
+  Verified by a test with a real orientation-tagged JPEG, not assumed.
 - The image is decoded **before** the keyboard is opened, so a missing or
   corrupt file says exactly that instead of failing with "device not found".
 - Uploading **replaces** whatever picture was there, and **switches the panel

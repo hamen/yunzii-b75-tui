@@ -383,9 +383,37 @@ settled it.
 - **Nearest-neighbour** resize, matching the vendor's
   `imageSmoothingEnabled = false`. An interpolating filter would produce
   different bytes for the same input file.
-- **Fully transparent pixels become black**, matching the vendor's own
-  pre-pass — its canvas starts transparent-black, so alpha 0 lands on black.
 - Aspect ratio is **not** preserved; the image is stretched to fill.
+
+#### Alpha: only alpha 0 goes black — this is not premultiplication
+
+The vendor's picture encoder ignores the alpha channel outright:
+
+```js
+function te(J){ const ae=J.data; ...
+  const xe=ae[he], ve=ae[he+1], re=ae[he+2];   // bytes 0-2 only
+  ... }
+```
+
+Its input is a `getImageData()` from a **freshly created canvas with no black
+fill**, and drawing source-over onto a transparent backdrop preserves the
+un-premultiplied colour. So:
+
+| Source pixel | On the panel |
+|---|---|
+| `rgba(255,0,0,255)` | full red |
+| `rgba(255,0,0,128)` | **full red** — alpha discarded, not blended |
+| `rgba(255,0,0,0)` | black — the canvas reads it back as `(0,0,0,0)` |
+
+A cross-review round read this repo's plan prose and asked for
+`out = src * alpha` instead (PR #4). That formula was a guess in the plan,
+never the device's behaviour. The `if (data[i+3] === 0)` black pre-pass that
+does exist in the vendor bundle belongs to its **GIF** path, which is a
+different code path from the one this milestone implements.
+
+Practical consequence: a logo with soft, semi-transparent edges will show
+those edge pixels at full colour against black rather than faded into it.
+Pre-flatten the file onto the background you want if that matters.
 
 ### How this was verified
 

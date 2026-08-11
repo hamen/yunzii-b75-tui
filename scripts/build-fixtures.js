@@ -308,8 +308,12 @@ function buildReport(opcode, b1, b2, lengthByte, payload) {
   return padTo64([opcode, b1, b2, lengthByte, lo, hi, 0x00, ...payload]);
 }
 
-// Fully transparent pixels are flattened to black, matching the vendor's own
-// `if (data[i+3] === 0) { data[i] = data[i+1] = data[i+2] = 0 }` pass.
+// Only FULLY transparent pixels become black; partial alpha keeps its full
+// colour. The vendor's picture encoder reads bytes 0-2 and ignores alpha, off
+// a getImageData() from a fresh (transparent, unfilled) canvas -- so nothing
+// is premultiplied, and only alpha 0 reads back as (0,0,0,0). See
+// protocol.rs's rgb565_encode docs; the `if (data[i+3] === 0)` pre-pass in
+// the vendor bundle is in its GIF path, not this one.
 function rgb565Encode(rgba) {
   const out = [];
   for (let i = 0; i < rgba.length; i += 4) {

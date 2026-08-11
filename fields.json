@@ -315,7 +315,7 @@
         "encoding": "constant",
         "note": "[magic, cmd=15, 0x00, len=0, innerCrc16(0x0F,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)."
       },
-      "note": "\"Switch to the GIF page\" button. Same 2-report shape as cmd11/cmd13. HARDWARE CAVEAT (round 2, with a real GIF now on the device): this command's bytes are confirmed byte-for-byte identical to what the vendor's own tool sends (captured directly), but NEITHER this repo's CLI NOR the vendor's own tool visually switches the TFT to the GIF page. See the entry for this in unresolved -- the command itself is correct, something else (unknown) is needed to make the GIF page actually display. DECISION (round 3): NOT shipped as a CLI command (main.rs's switch-page only accepts home/picture) -- the wire bytes are correct and this constant/documentation stay resolved, but sending a command that doesn't do what it says is not something this repo ships."
+      "note": "\"Switch to the GIF page\" button. Same info+finish shape as cmd11/cmd13. The bytes are correct and were always correct. Milestone 2 recorded that this command did not visibly switch the panel and filed it as unresolved; Milestone 3 found the real cause, and it was not this command -- the GIF under test had only ever been saved in the vendor's mode 0 (\"set as boot animation\"), which stores frames somewhere that never plays. Saved in mode 1 (\"save to the device\"), the GIF displays and cmd15 switches to it. See unresolved[0]. Not exposed by the CLI only because GIF upload is not implemented yet."
     },
     "cmd14_clearPicture": {
       "infoPackagePayload": {
@@ -390,7 +390,7 @@
         "cmd16_pictureUploadStart",
         "cmd12_pictureDeclareSize"
       ],
-      "shape": "552 reports: infoPackage(0x40 cmd16) -> [host sleeps 300 ms] -> dataPacket(0x41 cmd12, declare size) -> 549x dataPacket(0x41, 56 pixel bytes each) -> finish(0x42). The 300 ms pause sits between the start report and declare-size, NOT before the bulk data: that is the order in the vendor's own source (`await r(re); await sleep(300); await o(Ue); ...`) and it is where the gap appears in the captured timestamps.",
+      "shape": "552 reports: infoPackage(0x40 cmd16) -> [host sleeps 300 ms] -> dataPacket(0x41 cmd12, declare size) -> 549x dataPacket(0x41) carrying the pixel stream -> finish(0x42). The bulk packets carry 56 bytes each EXCEPT the last, which carries 32 and declares 32 -- see bulkPackets below; do not restate this as \"56 bytes each\", which is the mistake an earlier draft made. The 300 ms pause sits between the start report and declare-size, NOT before the bulk data: that is the order in the vendor's own source (`await r(re); await sleep(300); await o(Ue); ...`) and it is where the gap appears in the captured timestamps.",
       "bulkPackets": {
         "count": 549,
         "chunkBytes": 56,
@@ -400,7 +400,8 @@
         "panel": "160x96",
         "encoding": "RGB565, big-endian per pixel: v = (R>>3)<<11 | (G>>2)<<5 | (B>>3), emitted as [v>>8, v&0xFF]. Row-major, top row first, left to right. Fully transparent pixels are flattened to black before encoding. Total 30720 bytes, always.",
         "resize": "The vendor draws the source through a canvas with imageSmoothingEnabled = false, i.e. nearest-neighbour. An interpolating resize produces different bytes for the same input.",
-        "verifiedBy": "fixtures/picture-upload.json is regenerated from fixtures/test-quadrants.png through these rules and compared against the real capture in fixtures/raw/cap-picture-upload-hidlog.json by scripts/check-raw-consistency.js: 0 mismatches across all 552 reports / 30720 pixel bytes. A four-quadrant + gradient image was used precisely because solid colours cannot distinguish row order, channel order, or per-pixel byte order."
+        "verifiedBy": "fixtures/picture-upload.json is regenerated from fixtures/test-quadrants.png through these rules and compared against the real capture in fixtures/raw/cap-picture-upload-hidlog.json by scripts/check-raw-consistency.js: 0 mismatches across all 552 reports / 30720 pixel bytes. A four-quadrant + gradient image was used precisely because solid colours cannot distinguish row order, channel order, or per-pixel byte order.",
+        "alpha": "The vendor's PICTURE encoder reads only bytes 0-2 of each RGBA quad and never looks at alpha: `function te(J){const ae=J.data; ... const xe=ae[he],ve=ae[he+1],re=ae[he+2]; ...}`. Its source is a getImageData() off a FRESH canvas -- no black fill -- and drawing source-over onto a transparent backdrop preserves the un-premultiplied colour. So a semi-transparent pixel contributes its FULL RGB, and only a fully transparent pixel comes back as (0,0,0,0), i.e. black. This is NOT premultiplication (`out = src*a`), which a cross-review reading of the plan's prose suggested; the `if (data[i+3] === 0)` black pre-pass that does exist belongs to the vendor's GIF path, not this one."
       },
       "resolvedBy": "Milestone 3, live HID capture of the vendor tool + source read, 2026-08-11."
     }
