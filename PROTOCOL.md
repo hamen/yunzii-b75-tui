@@ -161,7 +161,11 @@ const updateDeviceTime = async () => {
 - The whole sequence repeats exactly 3 times per click — a literal loop in
   the vendor's code, not a retry-on-failure heuristic.
 - Every outbound report gets exactly 2 identical `inputreport` ACKs from the
-  device (byte offset 6 flips `0x00→0x55`).
+  device (byte offset 6 flips `0x00→0x55`) **as observed via WebHID in the
+  browser**. This is Phase 0's original finding and is left as-is here for
+  history — but see "Linux hidraw write/read byte layout" below: at the
+  native hidraw layer, only 1 real ACK arrives per write. The "2 ACKs"
+  count was specific to the WebHID/Chrome transport, not the wire protocol.
 
 Local time is used throughout (`hour()`/`minute()`/etc. on a JS `Date`
 object, which read local time unless explicitly converted) — no explicit
@@ -181,6 +185,35 @@ independently of the vendor-source reading — both methods agree exactly.
 Date payload in cap3 (`26,1,8,10`) matches the actual capture date,
 2026-08-10 (a Monday), exactly.
 
+## Linux hidraw write/read byte layout — resolved (Milestone 1)
+
+Phase 0 left this open; Milestone 1's native Rust implementation resolved it
+empirically against real hardware (see `fields.json`'s
+`linuxHidrawTransport` for full detail):
+
+- **`write()`** to `/dev/hidraw5` needs a **leading `0x00` byte prepended**
+  before the 64-byte report — 65 bytes total. This is the documented Linux
+  kernel behavior for unnumbered-report HID devices (confirmed correct,
+  not just theorized — writing 64 bytes with no prefix produces a
+  malformed reply from the device, not silence).
+- **`read()`** returns exactly 64 bytes, with **no** such prefix —
+  asymmetric with `write()`.
+- **Correction to Phase 0's ACK-count finding**: Phase 0's WebHID capture
+  showed exactly 2 identical ACKs per outbound report. At the native
+  hidraw layer, only **1** real ACK arrives per write — the "2 ACKs"
+  pattern was a WebHID/Chrome-side artifact, not a wire-protocol fact.
+
+Confirmed by sending the full 18-report "set time" sequence and visually
+verifying the TFT screen showed the correct **hour, minute, and date** —
+then reconfirmed the next day when the keyboard's own clock had correctly
+ticked forward overnight to match real time. **Weekday was not visually
+confirmed** — the TFT screen has no weekday field at all, so there's
+nothing to check on-screen. Weekday correctness instead rests on the
+encoding logic being unit-tested against every day of the week
+(`src/time.rs`) plus the device accepting the byte via a valid ACK — weaker
+evidence than a visual check, and intentionally not folded into the same
+"confirmed" claim as hour/minute/date.
+
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
 **Resolved** — every transmit-required field for "Update device time": HID op
@@ -188,21 +221,21 @@ type (output report), report ID (0), interface identity from BOTH the WebHID
 side (VID+PID+usage-page+usage) AND the Linux side (sysfs report descriptor,
 hash, USB interface number, ACL — see `fields.json`'s
 `linuxInterfaceIdentity`), opcode table, outer report structure, both
-checksum variants, and the full clock+date payload layout.
+checksum variants, the full clock+date payload layout, AND (as of Milestone
+1) the native hidraw write/read byte layout and real ACK count, above.
 
-**Unresolved** (named, not silently missing): the WebHID-Linux `hidraw`
-report-ID byte mapping for native `write()` — this specifically needs
-native code to test empirically, sysfs enumeration alone can't answer it;
-the numeric meaning of the `finish` command's constant length byte (`0x38`);
-opcodes for other screen commands (switch page, clear picture/GIF) —
-identified by name from the vendor source but not yet independently
-HID-captured; picture/GIF upload
-payload format entirely (out of scope this phase).
+**Unresolved** (named, not silently missing): the numeric meaning of the
+`finish` command's constant length byte (`0x38`); opcodes for other screen
+commands (switch page, clear picture/GIF) — identified by name from the
+vendor source but not yet independently HID-captured; picture/GIF upload
+payload format entirely (out of scope so far).
 
-## What's next (out of scope for this PR)
+## What's next
 
-A follow-up implementation plan covers the actual Rust/`ratatui` native tool,
-now that the wire format for one full command pair is known end-to-end. The
+Milestone 1 (this repo's native `set-time` CLI, see `README.md`) already
+ships the Rust implementation for this one command. What's left: a
+`ratatui` screen (once there's more than one action worth navigating
+between), and Milestones 2/3 (sliders, toggles, image/GIF upload) — each
+needs its own discovery pass first, same process as this document. The
 generic opcode/checksum/report-structure model above should carry over
-directly to Milestones 2/3 (sliders, toggles, image/GIF upload) — only the
-opcode-specific payload layout will differ per command.
+directly; only the opcode-specific payload layout will differ per command.

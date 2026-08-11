@@ -67,7 +67,7 @@
   },
 
   "transactionStructure": {
-    "note": "One 'Update device time' click = a for-loop of 3 iterations (confirmed in vendor source), each iteration sending: cmd9 infoPackage(0x40) -> cmd9 dataPacket(0x41) -> finish(0x42) -> cmd10 infoPackage(0x40) -> cmd10 dataPacket(0x41) -> finish(0x42). Every outbound report receives exactly 2 identical inputreport ACKs from the device (byte offset 6 flipped 0x00->0x55, otherwise byte-identical to the request) -- see rawEventCounts below for the counted evidence behind \"exactly 2\", not just prose."
+    "note": "One 'Update device time' click = a for-loop of 3 iterations (confirmed in vendor source), each iteration sending: cmd9 infoPackage(0x40) -> cmd9 dataPacket(0x41) -> finish(0x42) -> cmd10 infoPackage(0x40) -> cmd10 dataPacket(0x41) -> finish(0x42). Every outbound report receives exactly 2 identical inputreport ACKs from the device (byte offset 6 flipped 0x00->0x55, otherwise byte-identical to the request) AS OBSERVED VIA WEBHID -- see rawEventCounts below for the counted evidence behind that. IMPORTANT: this is the WebHID-transport count; see linuxHidrawTransport below -- at the native hidraw layer only 1 real ACK arrives per write, not 2."
   },
 
   "rawEventCounts": {
@@ -98,6 +98,14 @@
     ]
   },
 
+  "linuxHidrawTransport": {
+    "resolvedBy": "Milestone 1 (native Rust set-time implementation), confirmed empirically against real hardware on 2026-08-10/11 -- see also the plan-review discussion where reviewers disagreed on the theoretical answer before this was tested.",
+    "write": "A native write() to /dev/hidraw5 requires a leading 0x00 'report number' byte prepended before the 64-byte report -- 65 bytes total on the wire. This is the documented Linux kernel hidraw behavior for unnumbered-report HID devices (the descriptor above has no Report ID item, yet the kernel still expects a synthetic ID byte on write). Writing exactly 64 bytes (no prefix) produces garbage responses from the device (observed: a status byte of 0x0f instead of the expected 0x00/0x55, on an otherwise-matching report) -- NOT silence, an actual malformed reply.",
+    "read": "read() returns exactly 64 bytes, WITHOUT the leading 0x00 -- asymmetric with write(). This matches the same documented kernel behavior (reads of unnumbered reports are not report-ID-prefixed).",
+    "ackCount": "IMPORTANT CORRECTION to Phase 0's WebHID-based finding: Phase 0's browser capture observed exactly 2 identical inputreport events per outbound report. At the native hidraw layer, only ONE real ACK arrives per write. The '2 ACKs' pattern was a WebHID/Chrome-side artifact (e.g. dispatched to two internal listeners), not a fact about the wire protocol. Native code should expect and require exactly 1 ACK per write, not 2.",
+    "hardwareConfirmation": "The full 18-report 'set time' sequence, sent with this write/read form, produced a byte-perfect ACK for every report and set the keyboard's TFT to the correct time and date -- independently reconfirmed the next morning (2026-08-11) when the keyboard's own clock had correctly ticked forward overnight to match real time, i.e. it's a genuinely running clock that was set correctly, not a static value that happened to look right once. Hour, minute, and date were all visually confirmed correct on the physical screen both times. Weekday was NOT visually confirmed -- the TFT screen has no weekday field at all (confirmed by checking), so there is nothing to look at. Weekday correctness instead rests on: the encoding logic being unit-tested against every day of the week (src/time.rs), and the device accepting the byte via a valid ACK without error -- weaker evidence than a visual check, and named as such rather than folded into the same 'confirmed' claim as hour/minute/date."
+  },
+
   "unresolved": [
     {
       "item": "finish (0x42) length byte numeric meaning (why 0x38/56, not e.g. 0x00)",
@@ -110,10 +118,6 @@
     {
       "item": "picture/GIF upload payload format",
       "tried": "out of scope for this phase entirely -- not investigated."
-    },
-    {
-      "item": "WebHID sendReport(reportId, data) to Linux hidraw write() byte mapping -- does a native write() to /dev/hidrawX need a leading report-ID byte (0x00) prepended before these 64 bytes, given the device declares report ID 0 as a NUMBERED report (not the unnumbered/no-report-ID case)?",
-      "tried": "not testable from browser JS -- WebHID's sendReport API always excludes the report ID from its `data` argument by design, regardless of how Linux's hidraw treats report ID 0. This is a Linux-side kernel/driver detail that can only be resolved empirically once native code exists to try both forms against real hardware. Left for the Milestone 1 implementation phase."
     },
     {
       "item": "2.4G dongle and Bluetooth connection modes -- whether the config interface is present/functional over either",
