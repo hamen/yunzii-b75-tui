@@ -48,6 +48,10 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ./target/release/yunzii-b75-tui set-time
 ```
 
+The udev rule grants access to **all** of the keyboard's `hidraw`
+interfaces for this VID/PID (there's no finer-grained udev match available),
+not just the one this tool actually uses.
+
 Requires: [Rust](https://rustup.rs) 🦀 (for `bin/ci`'s `cargo` steps too),
 the keyboard connected via USB-C (2.4G dongle / Bluetooth untested), and the
 vendor's browser tab (if any) closed — WebHID and this tool can't hold the
@@ -57,10 +61,14 @@ device open at the same time.
 
 ## 🔧 Hardware
 
-Any unit that enumerates as USB `28e9:31c8` should work, since the config
-channel is a standard QMK/VIA-style Raw HID interface (usage page `0xFF60`,
-usage `0x61`, unnumbered report). Interface numbering can vary by
-machine/session — see `PROTOCOL.md` for how to re-identify it on yours.
+Built and tested against USB `28e9:31c8`, config channel usage page
+`0xFF60` / usage `0x61` (standard QMK/VIA-style Raw HID, unnumbered
+report). Device discovery matches the **exact** report-descriptor bytes
+captured from this unit, not just VID/PID — a firmware revision with a
+byte-identical config channel but different padding elsewhere would be
+rejected rather than silently assumed compatible. Interface numbering
+(which `hidraw*` node) can vary by machine/session — see `PROTOCOL.md` for
+how to re-identify it on yours.
 
 ---
 
@@ -110,6 +118,11 @@ little-endian for `0x40`.
 
 Full field-by-field mapping: `fields.json` (machine-readable) and
 `PROTOCOL.md` (human-readable, generated from it).
+
+**Debug flags** (not needed for normal use): `--debug-no-prefix` sends
+without the leading `0x00` byte — confirmed not to work, kept only to
+re-run that experiment if the device's behavior ever needs re-checking.
+`YUNZII_DEBUG=1` prints every sent report and received ACK in hex.
 
 ---
 

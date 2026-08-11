@@ -52,6 +52,11 @@ fn checksum16_le(opcode: u8, length: u8, payload: &[u8]) -> [u8; 2] {
 /// framing byte -- that's a transport concern, handled by the caller/
 /// `device` module, not the wire-format layer).
 fn build_report(opcode: u8, length: u8, payload: &[u8]) -> [u8; 64] {
+    debug_assert!(
+        payload.len() <= 64 - 7,
+        "payload of {} bytes doesn't fit in the 57 bytes available after the 7-byte header",
+        payload.len()
+    );
     let mut bytes = [0u8; 64];
     bytes[0] = opcode;
     bytes[3] = length;

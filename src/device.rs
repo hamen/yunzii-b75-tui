@@ -25,7 +25,10 @@ const PRODUCT_ID: u16 = 0x31C8;
 /// against these exact bytes -- not a general HID report-descriptor parser
 /// -- is an accepted, documented limitation for this milestone: a firmware
 /// revision with a byte-identical config channel but different padding
-/// elsewhere would be rejected.
+/// elsewhere would be rejected. If this ever needs re-deriving: read
+/// `/sys/class/hidraw/hidrawN/device/report_descriptor` directly on Linux
+/// (`xxd -p` that file) for the interface with usage page `0xFF60` / usage
+/// `0x61` -- this is exactly how these bytes were originally captured.
 const EXPECTED_REPORT_DESCRIPTOR: [u8; 34] = [
     0x06, 0x60, 0xff, 0x09, 0x61, 0xa1, 0x01, 0x09, 0x62, 0x15, 0x00, 0x26, 0xff, 0x00, 0x95, 0x40,
     0x75, 0x08, 0x81, 0x02, 0x09, 0x63, 0x15, 0x00, 0x26, 0xff, 0x00, 0x95, 0x40, 0x75, 0x08, 0x91,
@@ -96,6 +99,27 @@ impl std::error::Error for DeviceError {}
 impl From<io::Error> for DeviceError {
     fn from(e: io::Error) -> Self {
         DeviceError::Io(e)
+    }
+}
+
+impl DeviceError {
+    /// Enriches a plain I/O error with a hint that the device node may have
+    /// changed since it was opened (`/dev/hidrawN` numbering isn't stable
+    /// across a disconnect/replug -- a TOCTOU race for hot-pluggable
+    /// devices), and that the fix is to re-run discovery, not retry the
+    /// same handle. Call this on errors from operations AFTER `Device::open`
+    /// succeeded -- `open()`'s own errors (`PermissionDenied`,
+    /// `NoMatchingDevice`) already have their own specific messages.
+    pub fn with_reconnect_hint(self, path: &Path) -> Self {
+        match self {
+            DeviceError::Io(e) => DeviceError::Io(io::Error::new(
+                e.kind(),
+                format!(
+                    "{e} -- the device node {path:?} may have changed (e.g. unplugged/replugged mid-operation); re-run discovery rather than retrying this handle"
+                ),
+            )),
+            other => other,
+        }
     }
 }
 
@@ -172,6 +196,38 @@ fn find_device_under(sys_hidraw_root: &Path, dev_root: &Path) -> Result<PathBuf,
     }
 }
 
+/// Retries a syscall on EINTR (a signal, e.g. terminal resize or job
+/// control, interrupting a blocking or poll wait) instead of surfacing it
+/// as a failure -- without this, a signal arriving mid-transaction could
+/// abort a healthy 18-report "set time" sequence partway through, leaving
+/// a partially-applied clock/date, which is exactly the failure mode the
+/// abort-on-first-real-error design is trying to avoid.
+fn retry_eintr<T>(mut f: impl FnMut() -> nix::Result<T>) -> Result<T, DeviceError> {
+    loop {
+        match f() {
+            Err(nix::errno::Errno::EINTR) => continue,
+            other => return other.map_err(|e| DeviceError::Io(io::Error::from(e))),
+        }
+    }
+}
+
+/// Builds the exact bytes that get written to the hidraw node for a given
+/// report-ID form. Pure and side-effect-free so it's unit-testable without
+/// hardware -- the confirmed-correct 65-byte "0x00 || report" layout is
+/// this milestone's main transport fact and was previously only exercised
+/// live against the real device.
+fn frame_for_write(form: ReportIdForm, report: &[u8; REPORT_LEN]) -> Vec<u8> {
+    match form {
+        ReportIdForm::LeadingZeroOnWrite => {
+            let mut buf = Vec::with_capacity(REPORT_LEN + 1);
+            buf.push(0x00);
+            buf.extend_from_slice(report);
+            buf
+        }
+        ReportIdForm::NoPrefix => report.to_vec(),
+    }
+}
+
 pub struct Device {
     fd: OwnedFd,
     path: PathBuf,
@@ -197,26 +253,40 @@ impl Device {
     /// This must never sleep on the happy (nothing to drain) path, so it
     /// intentionally does not wait for readability first; it just tries.
     /// Returns how many reports were drained (0 is the expected, healthy
-    /// case before a fresh write).
+    /// case before a fresh write). If the node is still readable after
+    /// DRAIN_MAX_ITERATIONS, that's surfaced as an error rather than
+    /// silently stopping and letting the next write proceed against a
+    /// node that's still spewing leftover data.
     pub fn drain(&self) -> Result<usize, DeviceError> {
         let mut count = 0;
         for _ in 0..DRAIN_MAX_ITERATIONS {
             let mut buf = [0u8; REPORT_LEN];
-            match read(&self.fd, &mut buf) {
-                Ok(0) => break,
+            match retry_eintr(|| read(&self.fd, &mut buf)) {
+                Ok(0) => return Ok(count),
                 Ok(_) => count += 1,
-                Err(nix::errno::Errno::EAGAIN) => break,
-                Err(e) => return Err(DeviceError::Io(io::Error::from(e))),
+                Err(DeviceError::Io(e))
+                    if e.raw_os_error() == Some(nix::errno::Errno::EAGAIN as i32) =>
+                {
+                    return Ok(count);
+                }
+                Err(e) => return Err(e),
             }
         }
-        Ok(count)
+        Err(DeviceError::Io(io::Error::other(format!(
+            "device still readable after draining {DRAIN_MAX_ITERATIONS} reports -- something is wrong, refusing to proceed with a write against a node that won't go quiet"
+        ))))
     }
 
     fn poll_readable(&self, timeout: Duration) -> Result<bool, DeviceError> {
         let mut fds = [PollFd::new(self.fd.as_fd(), PollFlags::POLLIN)];
-        let timeout_ms: i32 = timeout.as_millis().min(i32::MAX as u128) as i32;
-        let n = poll(&mut fds, PollTimeout::from(timeout_ms as u16))
-            .map_err(|e| DeviceError::Io(io::Error::from(e)))?;
+        // Clamp (not truncate) to u16::MAX -- a plain `as u16` cast on a
+        // larger value would silently wrap to a much SHORTER timeout
+        // (e.g. 70000ms -> 4464ms), which is a real correctness bug, not
+        // just an edge case. Clamping caps the wait, it never shortens it
+        // unexpectedly. Not reachable today (ACK_TIMEOUT is 500ms) but
+        // this function shouldn't rely on that staying true.
+        let timeout_ms = timeout.as_millis().min(u16::MAX as u128) as u16;
+        let n = retry_eintr(|| poll(&mut fds, PollTimeout::from(timeout_ms)))?;
         Ok(n > 0)
     }
 
@@ -225,24 +295,12 @@ impl Device {
         form: ReportIdForm,
         report: &[u8; REPORT_LEN],
     ) -> Result<(), DeviceError> {
-        let n = match form {
-            ReportIdForm::LeadingZeroOnWrite => {
-                let mut buf = [0u8; REPORT_LEN + 1];
-                buf[1..].copy_from_slice(report);
-                write(&self.fd, &buf).map_err(|e| DeviceError::Io(io::Error::from(e)))?
-            }
-            ReportIdForm::NoPrefix => {
-                write(&self.fd, report).map_err(|e| DeviceError::Io(io::Error::from(e)))?
-            }
-        };
-        let expected = match form {
-            ReportIdForm::LeadingZeroOnWrite => REPORT_LEN + 1,
-            ReportIdForm::NoPrefix => REPORT_LEN,
-        };
-        if n != expected {
+        let buf = frame_for_write(form, report);
+        let n = retry_eintr(|| write(&self.fd, &buf))?;
+        if n != buf.len() {
             return Err(DeviceError::Io(io::Error::new(
                 io::ErrorKind::WriteZero,
-                format!("short write: {n} of {expected} bytes"),
+                format!("short write: {n} of {} bytes", buf.len()),
             )));
         }
         Ok(())
@@ -257,14 +315,18 @@ impl Device {
     /// something is actually wrong, not just "the other form."
     fn read_one(&self) -> Result<Option<[u8; REPORT_LEN]>, DeviceError> {
         let mut buf = [0u8; REPORT_LEN];
-        match read(&self.fd, &mut buf) {
+        match retry_eintr(|| read(&self.fd, &mut buf)) {
             Ok(REPORT_LEN) => Ok(Some(buf)),
             Ok(n) => Err(DeviceError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("expected a {REPORT_LEN}-byte read, got {n}"),
             ))),
-            Err(nix::errno::Errno::EAGAIN) => Ok(None),
-            Err(e) => Err(DeviceError::Io(io::Error::from(e))),
+            Err(DeviceError::Io(e))
+                if e.raw_os_error() == Some(nix::errno::Errno::EAGAIN as i32) =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -551,6 +613,27 @@ mod tests {
             .map(|i| u8::from_str_radix(&expected_hex[i..i + 2], 16).unwrap())
             .collect();
         assert_eq!(EXPECTED_REPORT_DESCRIPTOR.to_vec(), bytes);
+    }
+
+    #[test]
+    fn frame_for_write_leading_zero_form_is_65_bytes_with_zero_prefix() {
+        let mut report = [0u8; REPORT_LEN];
+        report[0] = 0x41;
+        report[7] = 19;
+        let framed = frame_for_write(ReportIdForm::LeadingZeroOnWrite, &report);
+        assert_eq!(framed.len(), REPORT_LEN + 1);
+        assert_eq!(framed[0], 0x00);
+        assert_eq!(&framed[1..], &report[..]);
+    }
+
+    #[test]
+    fn frame_for_write_no_prefix_form_is_64_bytes_unchanged() {
+        let mut report = [0u8; REPORT_LEN];
+        report[0] = 0x41;
+        report[7] = 19;
+        let framed = frame_for_write(ReportIdForm::NoPrefix, &report);
+        assert_eq!(framed.len(), REPORT_LEN);
+        assert_eq!(&framed[..], &report[..]);
     }
 
     #[test]

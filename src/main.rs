@@ -46,7 +46,7 @@ fn run_set_time(debug_no_prefix: bool) -> Result<(), DeviceError> {
     println!("found device: {}", path.display());
 
     let dev = Device::open(&path)?;
-    dev.drain()?;
+    dev.drain().map_err(|e| e.with_reconnect_hint(&path))?;
 
     let fields = time::snapshot_local();
     println!(
@@ -85,7 +85,8 @@ fn run_set_time(debug_no_prefix: bool) -> Result<(), DeviceError> {
         ReportIdForm::LeadingZeroOnWrite
     };
 
-    dev.send_sequence(form, &sequence)?;
+    dev.send_sequence(form, &sequence)
+        .map_err(|e| e.with_reconnect_hint(&path))?;
     println!(
         "sent successfully using {form:?}. Check the keyboard's TFT screen for the correct time."
     );
