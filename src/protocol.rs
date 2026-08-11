@@ -112,8 +112,10 @@ fn build_report(opcode: u8, length: u8, payload: &[u8]) -> [u8; 64] {
     bytes
 }
 
-/// Builds the `0x40` info-package report for a given constant payload
-/// (`CMD9_INFO_PAYLOAD` or `CMD10_INFO_PAYLOAD`).
+/// Builds the `0x40` info-package report for a given constant 7-byte
+/// payload (any of `CMD9_INFO_PAYLOAD`, `CMD10_INFO_PAYLOAD`,
+/// `CMD11_INFO_PAYLOAD`, `CMD13_INFO_PAYLOAD`, `CMD14_INFO_PAYLOAD`, or
+/// `CMD15_INFO_PAYLOAD`).
 pub fn build_info_package(payload: &[u8; 7]) -> [u8; 64] {
     build_report(OPCODE_INFO_PACKAGE, payload.len() as u8, payload)
 }
@@ -176,14 +178,20 @@ pub fn build_page_switch_sequence(page: Page) -> Vec<[u8; 64]> {
     vec![build_info_package(page.info_payload()), build_finish()]
 }
 
+/// The vendor's own `for (a=0; a<16; a++)` loop count for "clear the
+/// picture" (`scripts/vendor-source-excerpt.js`) -- named so the loop size
+/// lives in one place instead of the bare `16`/`32` scattered across the
+/// builder, its capacity hint, and its tests.
+const CLEAR_PICTURE_REPEAT_COUNT: usize = 16;
+
 /// The full "clear the picture" sequence: the `infoPackage(0x40) ->
-/// finish(0x42)` pair, repeated 16 times (32 reports total) -- matching the
-/// vendor's own `for (a=0; a<16; a++)` loop exactly (Phase 0/Milestone 2,
-/// `scripts/vendor-source-excerpt.js`). Every repeat is byte-identical: the
-/// command carries no per-iteration state.
+/// finish(0x42)` pair, repeated `CLEAR_PICTURE_REPEAT_COUNT` times (32
+/// reports total) -- matching the vendor's own loop exactly (Phase
+/// 0/Milestone 2, `scripts/vendor-source-excerpt.js`). Every repeat is
+/// byte-identical: the command carries no per-iteration state.
 pub fn build_clear_picture_sequence() -> Vec<[u8; 64]> {
-    let mut reports = Vec::with_capacity(32);
-    for _ in 0..16 {
+    let mut reports = Vec::with_capacity(CLEAR_PICTURE_REPEAT_COUNT * 2);
+    for _ in 0..CLEAR_PICTURE_REPEAT_COUNT {
         reports.push(build_info_package(&CMD14_INFO_PAYLOAD));
         reports.push(build_finish());
     }
@@ -435,12 +443,16 @@ mod tests {
     #[test]
     fn build_clear_picture_sequence_is_32_reports_in_exact_16x_info_finish_order() {
         let seq = build_clear_picture_sequence();
-        assert_eq!(seq.len(), 32, "expected 16x (info, finish) = 32 reports");
+        assert_eq!(
+            seq.len(),
+            CLEAR_PICTURE_REPEAT_COUNT * 2,
+            "expected {CLEAR_PICTURE_REPEAT_COUNT}x (info, finish) reports"
+        );
 
         let expected_info = clear_picture_fixture("cmd14-clear-picture-infoPackage");
         let expected_finish = clear_picture_fixture("cmd14-clear-picture-finish");
 
-        for repeat in 0..16 {
+        for repeat in 0..CLEAR_PICTURE_REPEAT_COUNT {
             let base = repeat * 2;
             assert_eq!(
                 seq[base], expected_info,
@@ -454,9 +466,9 @@ mod tests {
             );
         }
 
-        // All 16 info-package instances are byte-identical to each other --
+        // All info-package instances are byte-identical to each other --
         // the command carries no per-iteration state.
-        for repeat in 1..16 {
+        for repeat in 1..CLEAR_PICTURE_REPEAT_COUNT {
             assert_eq!(
                 seq[repeat * 2],
                 seq[0],

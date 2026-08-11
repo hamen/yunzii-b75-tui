@@ -5,10 +5,12 @@ Machine-readable source of truth: `fields.json`. Decoded per-capture evidence:
 re-verified real byte sequences — see that script's header for exactly how —
 with zero-padding computed programmatically, never hand-typed, after an
 earlier version of this file had a real transcription bug in the padding).
-`fixtures/raw/cap1-hidlog.json` is a minimally processed capture log;
-`scripts/check-raw-consistency.js` (part of `bin/ci`) asserts `fixtures/
-cap1.json` matches it byte-for-byte, so the decode is checked against real
-captured evidence, not only against itself. Capture tooling:
+`fixtures/raw/*.json` are minimally processed capture logs;
+`scripts/check-raw-consistency.js` (part of `bin/ci`) asserts each of
+`fixtures/cap1.json`, `fixtures/page-switch.json`, and
+`fixtures/clear-picture.json` matches its own raw log byte-for-byte, in
+exact order, so the decode is checked against real captured evidence, not
+only against itself. Capture tooling:
 `scripts/capture-hook.js`, `scripts/verify-checksums.js`,
 `scripts/vendor-source-excerpt.js`, `scripts/check-coverage.js`,
 `scripts/check-raw-consistency.js` (all three checks run in `bin/ci`).
@@ -115,7 +117,8 @@ checksum = (opcode + length + sum(payload_bytes))
 ```
 
 Verified exactly against all 3 live captures plus the vendor's own hardcoded
-constants — see `scripts/verify-checksums.js` (9/9 checks pass).
+constants — see `scripts/verify-checksums.js` (covers cmd 9/10/11/13/14/15,
+plus the deferred cmd18/19, all checks pass).
 
 There is a **separate, unrelated** CRC-16/ARC function in the vendor source
 (polynomial `0xA001` reflected, init `0xFFFF`) used only to precompute two
@@ -236,23 +239,44 @@ full raw HID log for one click, not just trusting the source.
 **Real-hardware verification (Milestone 2, 2026-08-11)**: `switch-page
 home` and `switch-page picture` were visually confirmed on the physical
 TFT — the screen genuinely changed to the expected page each time,
-including switching correctly right after a `clear-picture` run. `switch-page
-home` while already on the home page was a clean no-op (no error) —
-**this already-active-page no-op check was only run for `home`, not
-`picture` or `gif`**, named explicitly rather than implied as covered for
-all three. `clear-picture` was visually confirmed to remove the picture
-from the screen, and running it again on an already-empty slot was a clean
-no-op. **`switch-page gif` was sent and cleanly ACK'd (no error) but
-produced no visible change** — the test keyboard has no GIF ever uploaded
-(only a factory-default static picture in the picture slot), so this is
-consistent with an "empty GIF slot" no-op rather than a wrong command, but
-is weaker evidence than the visual confirmations for home/picture — named
-as such rather than folded into the same "confirmed" claim. A future test
-with an actual GIF uploaded would give a definitive visual check.
-**Whether `clear-picture` leaves a separately-stored GIF untouched was
-also NOT tested** — the same "no GIF on the test device" limitation — so
-this is an open question for a future capture with GIF content actually
-present, not a claim made and left unverified.
+including switching correctly right after a `clear-picture` run.
+`switch-page home` and `switch-page picture`, each while already on that
+page, were both a clean no-op (no error). `clear-picture` was visually
+confirmed to remove the picture from the screen, and running it again on
+an already-empty slot was a clean no-op.
+
+**`switch-page gif` round 2 update**: round-1 review (codex Blocker,
+cursor Should-fix) correctly flagged that the round-1 hardware run had no
+GIF on the device, so `switch-page gif`'s "no visible change" couldn't be
+distinguished from an actual bug. To resolve this properly (not just argue
+about severity), a real disposable test GIF was uploaded to the device via
+the vendor's own browser tool (this repo has no upload command yet — GIF
+upload is out of scope, see `unresolved` below) and saved successfully.
+`switch-page gif` was then run via this repo's native CLI **twice** —
+still no visible change, screen stayed on whatever page was already
+showing. To rule out a bug in this repo's own cmd15 bytes as the cause,
+the SAME "Switch to the GIF page" button was then clicked directly in the
+vendor's own official tool, with `scripts/capture-hook.js` recording the
+actual bytes sent: **`40 00 00 07 59 02 00 a5 5a 0f 00 00 c3 41 00...`**,
+byte-for-byte identical to `CMD15_INFO_PAYLOAD` — and the vendor's own
+tool **also** failed to switch the display. This is decisive: this repo's
+`switch-page gif` sends exactly what the vendor's own reference
+implementation sends, and neither one visually switches to the GIF page
+under these real conditions (GIF present, sent via HID, keyboard
+otherwise idle). This is a device/firmware behavior this repo's protocol
+layer cannot influence — not a wire-format bug in Milestone 2 — but *why*
+the display doesn't switch (needs to be set as "startup animation" first?
+needs a physical button press to cycle screens? something else?) is not
+understood, and is recorded as a new `unresolved` item rather than
+guessed at.
+
+**Whether `clear-picture` leaves a separately-stored GIF untouched
+remains untested** — not specific to `clear-picture`: since the GIF page
+itself cannot be visually reached at all in this environment (the finding
+above), there's no way to visually distinguish "GIF is fine but the page
+just doesn't display" from "GIF got corrupted by clear-picture." This
+gates on resolving the GIF-page-display finding first, not on anything in
+`clear-picture`'s own implementation.
 
 **"Clear GIF" is a different, deferred command — not shipped.** It looked
 at first like it might share a handler with "Clear the picture" (the

@@ -129,11 +129,16 @@ fn run_switch_page(page: protocol::Page) -> Result<(), DeviceError> {
     dev.drain().map_err(|e| e.with_reconnect_hint(&path))?;
 
     let sequence = protocol::build_page_switch_sequence(page);
-    println!("built {} reports for {:?}", sequence.len(), page);
+    let label = match page {
+        protocol::Page::Home => "home",
+        protocol::Page::Picture => "picture",
+        protocol::Page::Gif => "gif",
+    };
+    println!("built {} reports for {label}", sequence.len());
 
     dev.send_sequence(ReportIdForm::LeadingZeroOnWrite, &sequence)
         .map_err(|e| e.with_reconnect_hint(&path))?;
-    println!("sent successfully. Check the keyboard's TFT screen for the {page:?} page.");
+    println!("sent successfully. Check the keyboard's TFT screen for the {label} page.");
     Ok(())
 }
 
@@ -211,6 +216,21 @@ mod cli_tests {
     fn parses_clear_picture() {
         let cli = Cli::try_parse_from(["yunzii-b75-tui", "clear-picture"]).unwrap();
         assert!(matches!(cli.command, Commands::ClearPicture));
+    }
+
+    // Round-2 cross-review (cursor SF2, PR #3): the switch-page cmd-byte
+    // test below covers home/picture/gif, but clear-picture -> cmd14 had no
+    // symmetric check. Closes that gap the same way.
+    #[test]
+    fn clear_picture_dispatch_produces_cmd14() {
+        const CMD_BYTE_OFFSET: usize = 9;
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "clear-picture"]).unwrap();
+        assert!(matches!(cli.command, Commands::ClearPicture));
+        let sequence = protocol::build_clear_picture_sequence();
+        assert_eq!(
+            sequence[0][CMD_BYTE_OFFSET], 14,
+            "expected inner cmd byte 14"
+        );
     }
 
     #[test]
