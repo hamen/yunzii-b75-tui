@@ -121,6 +121,29 @@ impl DeviceError {
             other => other,
         }
     }
+
+    /// Appends a caller-supplied note about what the failure LEFT BEHIND.
+    ///
+    /// Added for `set-picture` (Milestone 3): a picture upload is 552
+    /// sequential writes, so a failure part-way through leaves a
+    /// half-written frame on the panel. The I/O error alone doesn't tell the
+    /// user that, or that `clear-picture` is the way out of it.
+    ///
+    /// Only the `Io` variant is rewritten, and that is sufficient rather than
+    /// an oversight (raised as a nit in PR #4's cross-review): every failure
+    /// `send_sequence` can return mid-transaction is an `Io` -- a short write,
+    /// a drain error, or the wrong ACK count, which is built as
+    /// `Io(ErrorKind::TimedOut)`. The other three variants come only from
+    /// `find_device`/`open`, which run before a single report is sent, so
+    /// there is nothing partially written to warn about.
+    pub fn with_note(self, note: &str) -> Self {
+        match self {
+            DeviceError::Io(e) => {
+                DeviceError::Io(io::Error::new(e.kind(), format!("{e} -- {note}")))
+            }
+            other => other,
+        }
+    }
 }
 
 fn parse_hid_id_line(uevent: &str) -> Option<(u16, u16)> {

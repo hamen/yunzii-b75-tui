@@ -21,6 +21,12 @@ function fail(msg) { console.error(`FAIL: ${msg}`); failures++; }
 function ok(msg) { console.log(`OK:   ${msg}`); }
 function parseHex(hex) { return hex.trim().split(/\s+/).map((b) => parseInt(b, 16)); }
 
+// Above this many reports in one fixture, suppress the per-report OK lines
+// and print a per-file summary instead. fixtures/picture-upload.json is 552
+// reports; at ~4 OK lines each it would bury every other check in the run
+// under 2000 lines of noise. FAIL lines are never suppressed.
+const VERBOSE_REPORT_LIMIT = 100;
+
 // --- 1. every reportShape's fields cover offsets 0-63 exactly once ---
 for (const [opcodeHex, shape] of Object.entries(fields.reportShapes)) {
   const covered = new Array(shape.totalLength).fill(false);
@@ -39,6 +45,10 @@ for (const [opcodeHex, shape] of Object.entries(fields.reportShapes)) {
 // --- 2-6. per-fixture-report checks ---
 for (const file of fixtureFiles) {
   const data = JSON.parse(fs.readFileSync(path.join(fixturesDir, file), 'utf8'));
+  const verbose = data.reports.length <= VERBOSE_REPORT_LIMIT;
+  const okDetail = verbose ? ok : () => {};
+  let checkedInFile = 0;
+
   for (const report of data.reports) {
     const label = `${file}/${report.command_name}`;
 
@@ -50,7 +60,8 @@ for (const file of fixtureFiles) {
 
     // 3. exactly 64 bytes
     if (bytes.length !== 64) { fail(`${label}: payload_hex is ${bytes.length} bytes, expected 64`); continue; }
-    ok(`${label}: 64 bytes`);
+    checkedInFile++;
+    okDetail(`${label}: 64 bytes`);
 
     const opcode = bytes[0];
     const length = bytes[3];
@@ -59,25 +70,36 @@ for (const file of fixtureFiles) {
     if (!shape) { fail(`${label}: unknown opcode ${opcodeHex}`); continue; }
 
     const payload = bytes.slice(7, 7 + length);
-    const sum = opcode + length + payload.reduce((a, b) => a + b, 0);
+    // Bytes 1-2 are part of the checksummed prefix. They are zero for every
+    // command except picture-upload's bulk packets, where they carry the
+    // little-endian byte offset -- so they must be summed, not skipped.
+    const sum = opcode + bytes[1] + bytes[2] + length + payload.reduce((a, b) => a + b, 0);
 
-    // 4. checksum
-    if (opcodeHex === '0x40') {
-      const expected = [sum & 0xff, (sum >> 8) & 0xff];
-      const actual = [bytes[4], bytes[5]];
-      if (JSON.stringify(expected) !== JSON.stringify(actual)) fail(`${label}: checksum16 mismatch, computed ${expected}, wire ${actual}`);
-      else ok(`${label}: checksum16 matches (${actual})`);
-    } else {
-      const expected = sum & 0xff;
-      const actual = bytes[4];
-      if (expected !== actual) fail(`${label}: checksum8 mismatch, computed 0x${expected.toString(16)}, wire 0x${actual.toString(16)}`);
-      else ok(`${label}: checksum8 matches (0x${actual.toString(16)})`);
+    // 4. checksum -- 16-bit little-endian at bytes 4-5, for EVERY opcode.
+    //    Milestone 3 correction: byte 5 used to be documented as a reserved
+    //    zero for 0x41/0x42, and byte 4 as a standalone 8-bit checksum. The
+    //    low byte was in fact always right; what was wrong was calling byte 5
+    //    reserved. In fixtures/picture-upload.json, byte 5 is non-zero in
+    //    551 of 552 reports (only `finish`, whose sum is 0x7a, has a zero
+    //    high byte). Every command decoded before Milestone 3 happened to
+    //    have a total sum below 256, which is why the old model held.
+    const expected = [sum & 0xff, (sum >> 8) & 0xff];
+    const actual = [bytes[4], bytes[5]];
+    if (JSON.stringify(expected) !== JSON.stringify(actual)) fail(`${label}: checksum16le mismatch, computed ${expected}, wire ${actual}`);
+    else okDetail(`${label}: checksum16le matches (${actual})`);
+
+    // 5. offset/reserved bytes 1-2, status byte, padding beyond length
+    if ('offset' in report) {
+      // A bulk data packet: bytes 1-2 are the LE offset into the pixel stream.
+      const wireOffset = bytes[1] | (bytes[2] << 8);
+      if (wireOffset !== report.offset) fail(`${label}: offset bytes decode to ${wireOffset}, fixture says ${report.offset}`);
+      else okDetail(`${label}: offset bytes match (${wireOffset})`);
+      if ('data_length' in report && length !== report.data_length) {
+        fail(`${label}: length byte is 0x${length.toString(16)} but fixture says data_length ${report.data_length}`);
+      }
+    } else if (bytes[1] !== 0 || bytes[2] !== 0) {
+      fail(`${label}: offsets 1-2 should be zero for a non-bulk report, got 0x${bytes[1].toString(16)} 0x${bytes[2].toString(16)}`);
     }
-
-    // 5. reserved bytes actually zero, status byte is 0x00 or 0x55, padding beyond length is zero
-    if (bytes[1] !== 0 || bytes[2] !== 0) fail(`${label}: reserved offsets 1-2 not zero`);
-    // 0x41/0x42 have a single reserved byte at offset 5 (0x40's offset 5 is the checksum's high byte, not reserved).
-    if (opcodeHex !== '0x40' && bytes[5] !== 0) fail(`${label}: reserved offset 5 not zero (0x${bytes[5].toString(16)})`);
     if (report.direction === 'out' && bytes[6] !== 0x00) fail(`${label}: outbound status byte should be 0x00, got 0x${bytes[6].toString(16)}`);
     if (report.direction === 'in' && bytes[6] !== 0x55) fail(`${label}: inbound ACK status byte should be 0x55, got 0x${bytes[6].toString(16)}`);
     for (let i = 7 + length; i < 64; i++) {
@@ -96,11 +118,23 @@ for (const file of fixtureFiles) {
                   : cmdByte === 13 ? fields.commands.cmd13_switchToPicturePage.infoPackagePayload.value
                   : cmdByte === 14 ? fields.commands.cmd14_clearPicture.infoPackagePayload.value
                   : cmdByte === 15 ? fields.commands.cmd15_switchToGifPage.infoPackagePayload.value
+                  : cmdByte === 16 ? fields.commands.cmd16_pictureUploadStart.infoPackagePayload.value
                   : null;
       if (known && JSON.stringify(payload) !== JSON.stringify(known)) {
         fail(`${label}: info-package payload ${JSON.stringify(payload)} != declared constant ${JSON.stringify(known)}`);
       } else if (known) {
-        ok(`${label}: info-package payload matches declared constant`);
+        okDetail(`${label}: info-package payload matches declared constant`);
+      }
+    }
+
+    // 5c. cmd12 declare-size is a 0x41 data-packet, not an info-package, so
+    //     it needs its own constant check rather than riding on 5b above.
+    if (opcodeHex === '0x41' && payload[0] === 165 && payload[1] === 90 && payload[2] === 12) {
+      const known = fields.commands.cmd12_pictureDeclareSize.dataPacketPayload.value;
+      if (JSON.stringify(payload) !== JSON.stringify(known)) {
+        fail(`${label}: declare-size payload ${JSON.stringify(payload)} != declared constant ${JSON.stringify(known)}`);
+      } else {
+        okDetail(`${label}: declare-size payload matches declared constant`);
       }
     }
 
@@ -114,10 +148,14 @@ for (const file of fixtureFiles) {
         if (JSON.stringify(payload) !== JSON.stringify(expectedPayload)) {
           fail(`${label}: decoded_payload ${JSON.stringify(expectedPayload)} != raw payload bytes ${JSON.stringify(payload)}`);
         } else {
-          ok(`${label}: decoded_payload matches raw bytes (${JSON.stringify(expectedPayload)})`);
+          okDetail(`${label}: decoded_payload matches raw bytes (${JSON.stringify(expectedPayload)})`);
         }
       }
     }
+  }
+
+  if (!verbose) {
+    ok(`${file}: all ${checkedInFile} reports pass every schema/checksum/offset/padding check (per-report lines suppressed above ${VERBOSE_REPORT_LIMIT})`);
   }
 }
 

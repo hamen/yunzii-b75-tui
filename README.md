@@ -30,19 +30,22 @@ USB ID 28e9:31c8  GDMicroelectronics YUNZII B75 PRO MAX Keyboard
 
 ## 🗺️ Status
 
-**⏰ `set-time`, 🖼️ `switch-page`, and 🧹 `clear-picture` work!** Their
-protocols are fully decoded (see `PROTOCOL.md`) with native CLI commands.
-`switch-page home` and `switch-page picture` are visually confirmed on real
-hardware. `switch-page` does **not** have a `gif` option: cmd15's bytes are
-resolved and proven byte-identical to the vendor's own tool, but neither
-this repo's command nor the vendor's own actually switches the TFT to the
-GIF page (tested with a real GIF uploaded) — some other operation is
-required and not yet known, so it's decoded-but-deferred rather than
-shipped not doing what it says (see `PROTOCOL.md`). "Clear GIF" is
-similarly decoded-but-deferred (2 trailing payload bytes not yet
-understood). No `ratatui` screen yet — CLI-only, done well. Sliders,
-toggles, and image/GIF upload aren't implemented yet; each gets its own
-reverse-engineering pass first, same process as `set-time` below. 🚧
+**⏰ `set-time`, 🖼️ `switch-page`, 🧹 `clear-picture`, and 🎨 `set-picture`
+work!** Their protocols are fully decoded (see `PROTOCOL.md`) with native
+CLI commands, and all four are visually confirmed on real hardware.
+
+`switch-page` still has no `gif` option, but the reason changed. Milestone 2
+thought cmd15 was broken. It is not: the vendor's GIF save has **three
+modes**, and every earlier test had used mode 0 ("set as boot animation"),
+which stores frames somewhere that never plays. Saved with mode 1 ("save to
+the device") the GIF displays and cmd15 switches to it correctly. So the
+option stays out only until GIF upload exists — switching to a page this
+tool cannot write to is not a useful command. GIF upload is decoded and is
+the next milestone; it reuses `set-picture`'s encoder unchanged.
+
+No `ratatui` screen yet — CLI-only, done well. Sliders and toggles aren't
+implemented; each gets its own reverse-engineering pass first, same process
+as `set-time` below. 🚧
 
 ---
 
@@ -56,12 +59,37 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ./target/release/yunzii-b75-tui set-time
 ./target/release/yunzii-b75-tui switch-page home    # or: picture (gif not shipped, see Status)
 ./target/release/yunzii-b75-tui clear-picture
+./target/release/yunzii-b75-tui set-picture logo.png
 ```
 
-`clear-picture` sends 32 reports (16 repeats); like `set-time`, a failure
-partway through aborts the whole transaction rather than silently
-continuing, but could leave the picture only partially cleared — the same
-risk class as `set-time`'s partial-clock-update risk, not a new one.
+### 🎨 `set-picture`
+
+Takes a **PNG or JPEG**. The panel is a fixed **160×96**, and the image is
+stretched to fill it with nearest-neighbour sampling — the same as the
+vendor's tool, which draws with image smoothing switched off. **Aspect ratio
+is not preserved.** Crop or letterbox the file yourself first if that
+matters.
+
+- **Fully transparent** pixels become **black**. Partial transparency keeps
+  its full colour — the alpha value is discarded, not blended, which is what
+  the vendor does too. A logo with soft edges shows those edges at full
+  colour against black; pre-flatten it yourself if you want them faded.
+- **EXIF orientation** is applied, so phone photos are not uploaded sideways.
+  Verified by a test with a real orientation-tagged JPEG, not assumed.
+- The image is decoded **before** the keyboard is opened, so a missing or
+  corrupt file says exactly that instead of failing with "device not found".
+- Uploading **replaces** whatever picture was there, and **switches the panel
+  to the picture page by itself** — you do not need `switch-page picture`
+  afterwards. Verified on hardware from the home page: the clock stayed up
+  during the upload and the image appeared when it finished.
+
+An upload is 552 reports and takes a moment. Like `set-time`, a failure
+partway through aborts rather than silently continuing, and it says so:
+a half-finished upload leaves a partially-written frame on the panel, and
+the fix is to re-run `set-picture` or run `clear-picture`.
+
+`clear-picture` sends 32 reports (16 repeats), with the same partial-failure
+caveat.
 
 The udev rule grants access to **all** of the keyboard's `hidraw`
 interfaces for this VID/PID (there's no finer-grained udev match available),
@@ -125,8 +153,16 @@ exact order.
 | `0x42` | Finish | Constant, no payload — commits the group |
 
 Every 64-byte report is checksummed with a plain byte sum (**not** a CRC):
-`opcode + length + sum(payload)`, 8-bit for `0x41`/`0x42`, 16-bit
-little-endian for `0x40`.
+`opcode + byte1 + byte2 + length + sum(payload)`, stored 16-bit
+little-endian at bytes 4-5 — for **every** opcode.
+
+> 📝 Milestone 3 corrected this. Bytes 4-5 used to be documented as an 8-bit
+> checksum plus a reserved zero for `0x41`/`0x42`, and bytes 1-2 as reserved.
+> Byte 4 was always right; byte 5 is the checksum's **high** byte, and bytes
+> 1-2 carry the bulk **data offset**. Every earlier command had a sum under
+> 256 and a zero offset, so the two models agreed — until picture upload,
+> where byte 5 is non-zero in 551 of 552 reports. No shipped behaviour
+> changed; the old fixtures still pass byte-for-byte.
 
 > ⚠️ Native `write()` to `/dev/hidraw*` needs a **leading `0x00` byte**
 > (65 bytes total) — this unnumbered-report interface still wants the

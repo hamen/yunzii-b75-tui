@@ -5,19 +5,32 @@
 //!
 //! ```text
 //! offset 0    : opcode (0x40 info-package / 0x41 data-packet / 0x42 finish)
-//! offset 1-2  : 0x00 0x00 (reserved)
+//! offset 1-2  : data offset, u16 little-endian (0x00 0x00 for every command
+//!               except picture-upload's bulk packets)
 //! offset 3    : length (of the payload that follows)
-//! offset 4    : checksum8, for 0x41/0x42
-//! offset 4-5  : checksum16 little-endian, for 0x40 (no separate reserved
-//!               byte at offset 5 for this opcode -- the checksum occupies
-//!               both offset 4 and 5)
-//! offset 5    : 0x00 (reserved), for 0x41/0x42 only
+//! offset 4-5  : checksum, u16 little-endian -- for ALL opcodes
 //! offset 6    : status (0x00 outbound / 0x55 device ACK)
 //! offset 7-63 : payload (length bytes), then 0x00 padding
 //! ```
 //!
-//! Checksum is a plain byte sum, NOT a CRC: `opcode + length + sum(payload)`,
-//! truncated to 8 or 16 bits depending on opcode.
+//! Checksum is a plain byte sum, NOT a CRC:
+//! `opcode + byte1 + byte2 + length + 0 + 0 + 0 + sum(payload)`, truncated to
+//! 16 bits and stored little-endian. Bytes 4-6 count as zero while summing:
+//! the vendor builds the array with 0x00 placeholders there, sums it, then
+//! writes the two checksum bytes back into offsets 4 and 5.
+//!
+//! # Correction, Milestone 3
+//!
+//! Offsets 1-2 were previously documented as "reserved" and offset 5 as a
+//! reserved zero with an 8-bit checksum at offset 4. Byte 4 was in fact
+//! always right -- it is the low byte under either model -- but byte 5 is the
+//! HIGH byte, not a reserved zero, and bytes 1-2 carry the bulk data offset.
+//! Every command decoded before picture upload had a total sum below 256 and
+//! a zero offset, so the old model emitted identical bytes and looked
+//! correct. In the 552-report picture-upload capture, byte 5 is non-zero in
+//! 551 of them. The existing `set-time` / `switch-page` / `clear-picture`
+//! fixture tests still pass byte-for-byte after this change -- that is the
+//! regression guard for the refactor.
 
 pub const OPCODE_INFO_PACKAGE: u8 = 0x40;
 pub const OPCODE_DATA_PACKET: u8 = 0x41;
@@ -50,15 +63,21 @@ pub const CMD15_INFO_PAYLOAD: [u8; 7] = [165, 90, 15, 0, 0, 195, 65];
 /// than a raw `u8` command byte, so an invalid page value is unrepresentable
 /// instead of a runtime check.
 ///
-/// `Gif`'s wire bytes (`CMD15_INFO_PAYLOAD`) are resolved and correct --
-/// proven byte-identical to the vendor's own tool -- but `main.rs`'s CLI
-/// deliberately does not expose a way to construct `Page::Gif` (round-3
-/// cross-review, codex Blocker, PR #3): neither this repo's command nor the
-/// vendor's own produces a visible page switch under real hardware
-/// conditions, so shipping it as a CLI command would ship something that
-/// doesn't do what it says. The variant and its tests stay here as the
-/// documented, correct wire-format layer for whenever the missing
-/// operation is found (`fields.json`'s `unresolved`).
+/// `Gif`'s wire bytes (`CMD15_INFO_PAYLOAD`) are resolved and correct, and
+/// `main.rs`'s CLI still does not expose a way to construct `Page::Gif` --
+/// but the REASON changed in Milestone 3, so the old one is not repeated
+/// here.
+///
+/// Milestone 2 deferred it believing cmd15 did not visibly switch the panel.
+/// It does. What was actually wrong was how the GIF had been stored: the
+/// vendor's GIF save has three modes, and every earlier test used mode 0
+/// ("set as boot animation"), which puts the frames somewhere that never
+/// plays. Saving with mode 1 ("save to the device") makes the GIF appear,
+/// and cmd15 then switches to it. See `fields.json`'s `unresolved[0]`.
+///
+/// So this stays unexposed only because GIF *upload* is not implemented
+/// yet: switching to an empty page is still not a useful command. That is a
+/// milestone, not a mystery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Home,
@@ -84,20 +103,22 @@ impl Page {
 /// tripped on exactly this trap once already).
 const FINISH_LENGTH: u8 = 0x38;
 
-fn checksum8(opcode: u8, length: u8, payload: &[u8]) -> u8 {
-    let sum: u32 = opcode as u32 + length as u32 + payload.iter().map(|&b| b as u32).sum::<u32>();
-    (sum & 0xff) as u8
-}
-
-fn checksum16_le(opcode: u8, length: u8, payload: &[u8]) -> [u8; 2] {
-    let sum: u32 = opcode as u32 + length as u32 + payload.iter().map(|&b| b as u32).sum::<u32>();
+/// The one checksum used by every opcode. `b1`/`b2` are report bytes 1-2:
+/// zero for every command except picture-upload's bulk packets, where they
+/// carry the little-endian data offset -- and part of the sum either way.
+fn checksum16_le(opcode: u8, b1: u8, b2: u8, length: u8, payload: &[u8]) -> [u8; 2] {
+    let sum: u32 = opcode as u32
+        + b1 as u32
+        + b2 as u32
+        + length as u32
+        + payload.iter().map(|&b| b as u32).sum::<u32>();
     [(sum & 0xff) as u8, ((sum >> 8) & 0xff) as u8]
 }
 
 /// Builds a 64-byte report body (NOT including any Linux hidraw report-ID
 /// framing byte -- that's a transport concern, handled by the caller/
 /// `device` module, not the wire-format layer).
-fn build_report(opcode: u8, length: u8, payload: &[u8]) -> [u8; 64] {
+fn build_report_at(opcode: u8, b1: u8, b2: u8, length: u8, payload: &[u8]) -> [u8; 64] {
     // A real assert (not debug_assert): the slice copy below panics anyway
     // on an oversized payload, so this only changes the panic into a clear
     // message instead of an opaque index-out-of-bounds -- worth paying for
@@ -109,25 +130,28 @@ fn build_report(opcode: u8, length: u8, payload: &[u8]) -> [u8; 64] {
     );
     let mut bytes = [0u8; 64];
     bytes[0] = opcode;
+    bytes[1] = b1;
+    bytes[2] = b2;
     bytes[3] = length;
-    if opcode == OPCODE_INFO_PACKAGE {
-        let cs = checksum16_le(opcode, length, payload);
-        bytes[4] = cs[0];
-        bytes[5] = cs[1];
-    } else {
-        bytes[4] = checksum8(opcode, length, payload);
-        // bytes[5] stays 0x00 (reserved)
-    }
+    let cs = checksum16_le(opcode, b1, b2, length, payload);
+    bytes[4] = cs[0];
+    bytes[5] = cs[1];
     // bytes[6] stays 0x00 (outbound status); ACKs are a device response, not built here.
     bytes[7..7 + payload.len()].copy_from_slice(payload);
     bytes
 }
 
-/// Builds the `0x40` info-package report for a given constant 7-byte
-/// payload (any of `CMD9_INFO_PAYLOAD`, `CMD10_INFO_PAYLOAD`,
-/// `CMD11_INFO_PAYLOAD`, `CMD13_INFO_PAYLOAD`, `CMD14_INFO_PAYLOAD`, or
-/// `CMD15_INFO_PAYLOAD`).
-pub fn build_info_package(payload: &[u8; 7]) -> [u8; 64] {
+/// The common case: a report with no data offset (bytes 1-2 zero).
+fn build_report(opcode: u8, length: u8, payload: &[u8]) -> [u8; 64] {
+    build_report_at(opcode, 0, 0, length, payload)
+}
+
+/// Builds the `0x40` info-package report for a given constant payload.
+///
+/// Takes a slice, not `&[u8; 7]`: every command through Milestone 2 had a
+/// 7-byte info payload, but `CMD16_START_PAYLOAD` (picture upload) has 8.
+/// A slice keeps one builder instead of adding a parallel 8-byte variant.
+pub fn build_info_package(payload: &[u8]) -> [u8; 64] {
     build_report(OPCODE_INFO_PACKAGE, payload.len() as u8, payload)
 }
 
@@ -207,6 +231,129 @@ pub fn build_clear_picture_sequence() -> Vec<[u8; 64]> {
         reports.push(build_finish());
     }
     reports
+}
+
+// --- Milestone 3: picture upload ---
+
+/// The TFT panel's fixed pixel size. Confirmed two ways: the pixel stream is
+/// always 30720 bytes (= 160 * 96 * 2), and the vendor bundle maps this
+/// product ID to `{width: 160, height: 96}` in its per-product screen table.
+pub const PANEL_W: u32 = 160;
+pub const PANEL_H: u32 = 96;
+
+/// Bytes of RGB565 pixel data for one full frame.
+pub const PICTURE_BYTES: usize = (PANEL_W as usize) * (PANEL_H as usize) * 2;
+
+/// Payload bytes per bulk data packet: the report size minus the 7-byte
+/// header, which is the vendor's own `i = reqLen - 7`.
+const BULK_CHUNK: usize = 56;
+
+/// The cmd-16 (start a picture upload) info-package payload. EIGHT bytes,
+/// unlike every command above it: `[magic, cmd=16, 0x00, len=1,
+/// innerCrc16(0x10,0x00,0x01), 0x01]`.
+pub const CMD16_START_PAYLOAD: [u8; 8] = [165, 90, 16, 0, 1, 197, 177, 1];
+
+/// The cmd-12 (declare the pixel-stream size) payload. Sent as a *data
+/// packet* (0x41), not an info package -- the only command whose leading
+/// report is a 0x41. `120, 0` is 30720 encoded `[hi, lo]`, the opposite
+/// order from the little-endian offset in bytes 1-2 of the same report.
+pub const CMD12_DECLARE_SIZE_PAYLOAD: [u8; 7] = [165, 90, 12, 120, 0, 195, 147];
+
+/// The pause the vendor takes between the start report and declare-size.
+///
+/// It belongs HERE, between those two reports -- not before the bulk data.
+/// That is the order in the vendor's own source (`await r(re); await
+/// sleep(300); await o(Ue); await o(xe); await i()`), and it is where the
+/// gap shows up in the captured timestamps: 300 ms between the start ACK and
+/// the declare-size write, and no gap at all before the first bulk packet.
+pub const START_TO_DECLARE_DELAY_MS: u64 = 300;
+
+/// Encodes RGBA bytes as the panel's RGB565, big-endian per pixel.
+///
+/// `v = (R>>3)<<11 | (G>>2)<<5 | (B>>3)`, emitted as `[v>>8, v&0xFF]`,
+/// row-major, top row first, left to right.
+///
+/// # Alpha
+///
+/// Only **fully** transparent pixels become black. Partial alpha keeps its
+/// full colour and is otherwise ignored.
+///
+/// That is what the device gets, and it is not premultiplication. The
+/// vendor's picture encoder is
+/// `function te(J){const ae=J.data; ... xe=ae[he], ve=ae[he+1], re=ae[he+2]; ...}`
+/// -- it reads bytes 0-2 and never touches alpha. Its input is a
+/// `getImageData()` from a freshly created canvas with no black fill, and
+/// drawing source-over onto a transparent backdrop leaves the
+/// un-premultiplied colour intact; only a fully transparent pixel reads back
+/// as `(0,0,0,0)`.
+///
+/// A cross-review round called this a bug and asked for `out = src * a`
+/// (PR #4, codex Blocker). That formula came from a sentence in the plan,
+/// not from the device. The `if (data[i+3] === 0)` black pre-pass that does
+/// exist in the vendor bundle belongs to its GIF path, not this one.
+/// `cli_tests::partial_alpha_keeps_full_colour_and_only_alpha_zero_becomes_black`
+/// locks the behaviour.
+///
+/// Pure function: no image decoding, no I/O, no device.
+pub fn rgb565_encode(rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(rgba.len() / 2);
+    for px in rgba.chunks_exact(4) {
+        let (r, g, b) = if px[3] == 0 {
+            (0u8, 0u8, 0u8)
+        } else {
+            (px[0], px[1], px[2])
+        };
+        let v: u16 = ((r as u16 >> 3) << 11) | ((g as u16 >> 2) << 5) | (b as u16 >> 3);
+        out.push((v >> 8) as u8);
+        out.push((v & 0xff) as u8);
+    }
+    out
+}
+
+/// The first report of a picture upload, sent on its own so the caller can
+/// sleep `START_TO_DECLARE_DELAY_MS` before sending the rest. The delay is
+/// sequenced by the caller, visibly, rather than hidden inside a builder
+/// that is otherwise pure.
+pub fn build_picture_upload_start() -> [u8; 64] {
+    build_info_package(&CMD16_START_PAYLOAD)
+}
+
+/// Everything after the delay: declare-size, then the bulk pixel packets,
+/// then finish. 551 reports for a full 30720-byte frame.
+///
+/// The length byte of each bulk packet is the REAL remaining byte count, so
+/// the final packet declares 32 rather than a zero-padded 56 (548 * 56 + 32
+/// = 30720). That matters beyond the length field itself: the length byte is
+/// summed into the checksum, so padding it would also corrupt byte 4-5 of
+/// that packet.
+pub fn build_picture_upload_body(pixels: &[u8]) -> Vec<[u8; 64]> {
+    assert_eq!(
+        pixels.len(),
+        PICTURE_BYTES,
+        "picture upload needs exactly {PICTURE_BYTES} bytes of RGB565 data ({PANEL_W}x{PANEL_H}), got {}",
+        pixels.len()
+    );
+
+    let chunks = pixels.len().div_ceil(BULK_CHUNK);
+    let mut reports = Vec::with_capacity(chunks + 2);
+    reports.push(build_data_packet(&CMD12_DECLARE_SIZE_PAYLOAD));
+    for (i, chunk) in pixels.chunks(BULK_CHUNK).enumerate() {
+        let offset = i * BULK_CHUNK;
+        reports.push(build_report_at(
+            OPCODE_DATA_PACKET,
+            (offset & 0xff) as u8,
+            ((offset >> 8) & 0xff) as u8,
+            chunk.len() as u8,
+            chunk,
+        ));
+    }
+    reports.push(build_finish());
+    reports
+}
+
+/// Total reports in one picture upload, start included: 1 + 1 + 549 + 1.
+pub fn picture_upload_report_count() -> usize {
+    1 + 1 + PICTURE_BYTES.div_ceil(BULK_CHUNK) + 1
 }
 
 #[cfg(test)]
@@ -345,13 +492,14 @@ mod tests {
     }
 
     #[test]
-    fn checksum8_wraps_at_256_not_just_correct_for_small_samples() {
-        // opcode(0x41=65) + length(255) + payload sum(255*3=765) = 65+255+765 = 1085.
-        // 1085 mod 256 = 61 = 0x3d. This exercises the truncation path, not just
-        // small in-range values like the fixture samples happen to be.
+    fn checksum_carries_into_the_high_byte_instead_of_being_truncated() {
+        // opcode(0x41=65) + length(255) + payload sum(255*3=765) = 1085 = 0x043d.
+        // The old model kept only 0x3d and wrote a reserved 0x00 at byte 5; the
+        // real wire format keeps the 0x04. This is the truncation path the
+        // fixtures' own small sums never exercise.
         let payload = [255u8, 255, 255];
         let report = build_report(OPCODE_DATA_PACKET, 255, &payload);
-        assert_eq!(report[4], 0x3d);
+        assert_eq!([report[4], report[5]], [0x3d, 0x04]);
     }
 
     #[test]
@@ -360,10 +508,27 @@ mod tests {
         // against the vendor's own hardcoded literal checksum bytes.
         let cs = checksum16_le(
             OPCODE_INFO_PACKAGE,
+            0,
+            0,
             CMD9_INFO_PAYLOAD.len() as u8,
             &CMD9_INFO_PAYLOAD,
         );
         assert_eq!(cs, [0xf6, 0x02]);
+    }
+
+    #[test]
+    fn data_offset_bytes_are_part_of_the_checksum() {
+        // Two bulk packets with an identical payload but different offsets
+        // must NOT share a checksum. Real values from the capture: offset 0
+        // gives [0x99, 0x1b], offset 56 gives [0xd1, 0x1b] -- a shift of
+        // exactly 56, the offset byte itself. If bytes 1-2 were left out of
+        // the sum (as "reserved" implied), both would be [0x99, 0x1b].
+        let payload: Vec<u8> = std::iter::repeat_n([0xf8u8, 0x00], 28).flatten().collect();
+        let at0 = build_report_at(OPCODE_DATA_PACKET, 0x00, 0x00, 0x38, &payload);
+        let at56 = build_report_at(OPCODE_DATA_PACKET, 0x38, 0x00, 0x38, &payload);
+        assert_eq!([at0[4], at0[5]], [0x99, 0x1b]);
+        assert_eq!([at56[4], at56[5]], [0xd1, 0x1b]);
+        assert_ne!([at0[4], at0[5]], [at56[4], at56[5]]);
     }
 
     #[test]
@@ -486,5 +651,159 @@ mod tests {
                 "repeat {repeat}'s info-package must be byte-identical to repeat 0's"
             );
         }
+    }
+
+    // --- Milestone 3: picture upload (cmd16 / cmd12 / bulk / finish) ---
+
+    #[test]
+    fn rgb565_encodes_known_colours_including_truncation_boundaries() {
+        // Primaries and extremes: these pin channel order, bit widths, and
+        // big-endian byte order all at once.
+        let cases: [([u8; 4], [u8; 2]); 8] = [
+            ([255, 0, 0, 255], [0xf8, 0x00]),     // red
+            ([0, 255, 0, 255], [0x07, 0xe0]),     // green
+            ([0, 0, 255, 255], [0x00, 0x1f]),     // blue
+            ([255, 255, 255, 255], [0xff, 0xff]), // white
+            ([0, 0, 0, 255], [0x00, 0x00]),       // black
+            // Truncation: the low 3 bits of R/B and the low 2 of G are
+            // dropped, so these land on the same value as the primaries.
+            ([7, 3, 7, 255], [0x00, 0x00]),
+            ([248, 252, 248, 255], [0xff, 0xff]),
+            // Alpha 0 is flattened to black regardless of its colour.
+            ([255, 128, 64, 0], [0x00, 0x00]),
+        ];
+        for (rgba, expected) in cases {
+            assert_eq!(
+                rgb565_encode(&rgba),
+                expected.to_vec(),
+                "rgba {rgba:?} should encode to {expected:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rgb565_encode_length_is_two_bytes_per_pixel() {
+        let rgba = vec![0u8; PICTURE_BYTES * 2]; // 4 bytes/px -> 2 bytes/px
+        assert_eq!(rgb565_encode(&rgba).len(), PICTURE_BYTES);
+    }
+
+    /// The whole picture-upload fixture, as (command_name, bytes) in order.
+    fn picture_upload_fixture() -> Vec<(String, [u8; 64])> {
+        let data: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/picture-upload.json"))
+                .expect("picture-upload.json must be valid JSON");
+        data["reports"]
+            .as_array()
+            .expect("reports array")
+            .iter()
+            .map(|r| {
+                (
+                    r["command_name"].as_str().unwrap().to_string(),
+                    parse_fixture_hex(r["payload_hex"].as_str().unwrap()),
+                )
+            })
+            .collect()
+    }
+
+    /// The 30720 pixel bytes the fixture actually carries, reassembled from
+    /// its bulk packets -- i.e. read back out of the wire format rather than
+    /// recomputed, so a test using it is comparing against the capture.
+    fn fixture_pixel_stream() -> Vec<u8> {
+        let mut out = Vec::with_capacity(PICTURE_BYTES);
+        for (name, bytes) in picture_upload_fixture() {
+            if name.starts_with("picture-bulk-") {
+                let len = bytes[3] as usize;
+                out.extend_from_slice(&bytes[7..7 + len]);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn picture_upload_start_matches_fixture() {
+        let fixture = picture_upload_fixture();
+        assert_eq!(fixture[0].0, "cmd16-picture-start-infoPackage");
+        assert_eq!(build_picture_upload_start(), fixture[0].1);
+    }
+
+    #[test]
+    fn picture_upload_body_matches_the_full_552_report_capture() {
+        let fixture = picture_upload_fixture();
+        assert_eq!(
+            fixture.len(),
+            picture_upload_report_count(),
+            "fixture should hold all {} reports",
+            picture_upload_report_count()
+        );
+
+        let body = build_picture_upload_body(&fixture_pixel_stream());
+        assert_eq!(
+            body.len(),
+            fixture.len() - 1,
+            "body is everything after start"
+        );
+
+        // Byte-for-byte, in order, against real captured hardware traffic.
+        for (i, report) in body.iter().enumerate() {
+            let (name, expected) = &fixture[i + 1];
+            assert_eq!(
+                report,
+                expected,
+                "report {} ({name}) differs from the capture",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn picture_upload_bulk_offsets_and_lengths_are_exact() {
+        let body = build_picture_upload_body(&fixture_pixel_stream());
+        let bulk = &body[1..body.len() - 1];
+        assert_eq!(bulk.len(), 549);
+
+        let mut total = 0usize;
+        for (i, r) in bulk.iter().enumerate() {
+            let offset = r[1] as usize | ((r[2] as usize) << 8);
+            assert_eq!(offset, i * BULK_CHUNK, "packet {i} has the wrong offset");
+            total += r[3] as usize;
+        }
+        assert_eq!(
+            total, PICTURE_BYTES,
+            "declared lengths must sum to the frame size"
+        );
+
+        // The one that an implementation is most likely to get wrong: the
+        // last packet declares its REAL length, 32, not a padded 56.
+        assert_eq!(bulk[bulk.len() - 1][3], 0x20);
+        assert_eq!(
+            bulk[bulk.len() - 1][1] as usize | ((bulk[bulk.len() - 1][2] as usize) << 8),
+            30688
+        );
+        assert!(
+            bulk[..bulk.len() - 1].iter().all(|r| r[3] == 0x38),
+            "every packet except the last carries a full 56 bytes"
+        );
+    }
+
+    #[test]
+    fn picture_upload_opcode_order_is_declare_then_bulk_then_finish() {
+        let body = build_picture_upload_body(&fixture_pixel_stream());
+        assert_eq!(build_picture_upload_start()[0], OPCODE_INFO_PACKAGE);
+        assert_eq!(body[0][0], OPCODE_DATA_PACKET);
+        assert_eq!(&body[0][7..14], &CMD12_DECLARE_SIZE_PAYLOAD);
+        assert!(
+            body[1..body.len() - 1]
+                .iter()
+                .all(|r| r[0] == OPCODE_DATA_PACKET)
+        );
+        assert_eq!(*body.last().unwrap(), build_finish());
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly 30720 bytes")]
+    fn picture_upload_body_rejects_a_wrong_sized_frame() {
+        // Guards against silently uploading a truncated or oversized frame if
+        // a future caller forgets to resize first.
+        build_picture_upload_body(&vec![0u8; PICTURE_BYTES * 2]);
     }
 }

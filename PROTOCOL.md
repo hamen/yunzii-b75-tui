@@ -103,6 +103,20 @@ offset  6  : status -- 0x00 outbound, 0x55 in the device's ACK
 offset  7-63: payload (length bytes), then 0x00 padding
 ```
 
+Offsets 1-2 are the **data offset** for picture-upload bulk packets, and
+zero for every other command. Earlier phases called them "reserved" — see
+the checksum correction below.
+
+**Report size is 64 bytes.** Worth stating because the vendor's JavaScript
+builds a **63**-byte array and calls `sendReport(0, data)`: Chrome then
+zero-pads it up to the output report size the device declares. That
+declaration was read from Linux sysfs for this exact keyboard
+(`/sys/class/hidraw/*/device/report_descriptor`) and says `Report Count =
+64, Report Size = 8` with no Report ID item, for both directions. So the
+64th byte is real, and it is always `0x00`. Any capture taken from the
+browser side is one byte short of the wire report and must be padded, not
+trusted as-is.
+
 **There is no multi-report fragmentation.** An earlier hypothesis (before
 this phase) assumed opcodes 0x40/0x41/0x42 were fragments of one oversized
 logical message. That's wrong: each is an independently complete report type
@@ -111,14 +125,41 @@ with its own opcode, length, and checksum. No "reassembly" step exists.
 ### Checksum — a plain byte sum, not a CRC
 
 ```
-checksum = (opcode + length + sum(payload_bytes))
-0x41 / 0x42 reports: 1 byte  = checksum & 0xFF, at offset 4
-0x40 reports:        2 bytes = [checksum & 0xFF, (checksum >> 8) & 0xFF], at offsets 4-5
+sum      = opcode + byte1 + byte2 + length + 0 + 0 + 0 + sum(payload_bytes)
+checksum = [sum & 0xFF, (sum >> 8) & 0xFF]   at offsets 4-5, for EVERY opcode
 ```
 
-Verified exactly against all 3 live captures plus the vendor's own hardcoded
-constants — see `scripts/verify-checksums.js` (covers cmd 9/10/11/13/14/15,
-plus the deferred cmd18/19, all checks pass).
+Bytes 4-6 count as zero while summing: the vendor builds the array with
+`0x00` placeholders in those three slots, sums it, then writes the two
+checksum bytes back into offsets 4 and 5.
+
+#### Correction (Milestone 3) — this replaces what earlier phases documented
+
+Phases 0-2 described `0x41`/`0x42` as carrying an **8-bit** checksum at
+offset 4 with a **reserved zero** at offset 5, and offsets 1-2 as reserved.
+Two of those three claims were wrong:
+
+| Byte | Old claim | Actually |
+|---|---|---|
+| 4 | 8-bit checksum (0x41/0x42) | **Correct** — it is the low byte either way |
+| 5 | reserved, always `0x00` | The checksum's **high** byte |
+| 1-2 | reserved, always `0x00` | The bulk **data offset**, u16 little-endian |
+
+Why it went unnoticed for two milestones: every command decoded before
+picture upload had a total sum below 256 **and** a zero offset, so the two
+models emit identical bytes. Picture upload is the first command where they
+diverge, and it diverges hard — in the 552-report capture, byte 5 is
+non-zero in **551** of them.
+
+This is a documentation and model correction, not a behaviour change. Every
+`set-time`, `switch-page`, and `clear-picture` fixture still passes
+byte-for-byte under the unified formula, which is exactly the regression
+guard the refactor needed.
+
+Verified against the vendor's own hardcoded constants and against every
+report of every capture — see `scripts/verify-checksums.js`, which now runs
+the one formula over all 552 real picture-upload reports and reports how
+many fit the old model (one: `finish`, whose sum is `0x7a`).
 
 There is a **separate, unrelated** CRC-16/ARC function in the vendor source
 (polynomial `0xA001` reflected, init `0xFFFF`) used only to precompute two
@@ -301,6 +342,108 @@ need to resolve it — deferring an under-understood command rather than
 shipping it on "the checksum matches" is the same discipline `set-time`'s
 still-unexplained `finish` length byte gets.
 
+## Picture upload — resolved (Milestone 3)
+
+`yunzii-b75-tui set-picture <file>`. 552 reports for one full frame.
+
+```
+infoPackage(0x40, cmd16)        start upload
+   ... host sleeps 300 ms ...
+dataPacket(0x41, cmd12)         declare 30720 bytes of pixel data
+dataPacket(0x41) x 549          the pixels, 56 bytes per report
+finish(0x42)
+```
+
+**The 300 ms pause goes between the start report and declare-size**, not
+before the bulk data. That is the order in the vendor's own source
+(`await r(re); await sleep(300); await o(Ue); await o(xe); await i()`) and
+it is where the gap appears in the captured timestamps: 300 ms between the
+start ACK and the declare-size write, and none before the first pixel
+packet. Two plan reviewers independently expected the opposite; the capture
+settled it.
+
+### Bulk packets
+
+- **56 bytes each**, which is the vendor's own `reqLen - 7` — the report
+  size minus the 7-byte header.
+- **Offset in bytes 1-2**, u16 little-endian, walking 0, 56, 112, … 30688.
+- **The length byte is the real remaining count.** The last packet declares
+  `0x20` (32), *not* a zero-padded `0x38`: `548 × 56 + 32 = 30720` exactly.
+  This is easy to get wrong and it does not fail quietly — the length byte
+  is summed into the checksum, so padding it corrupts that packet's
+  checksum too.
+
+### Pixel format
+
+- Panel is a fixed **160×96**, so a frame is always **30720 bytes**.
+  Confirmed twice over: the byte count, and the vendor bundle's per-product
+  screen table, which maps this product ID to `{width:160, height:96}`.
+- **RGB565, big-endian per pixel**: `v = (R>>3)<<11 | (G>>2)<<5 | (B>>3)`,
+  emitted `[v>>8, v&0xFF]`. Row-major, top row first, left to right.
+- **Nearest-neighbour** resize, matching the vendor's
+  `imageSmoothingEnabled = false`. An interpolating filter would produce
+  different bytes for the same input file.
+- Aspect ratio is **not** preserved; the image is stretched to fill.
+
+#### Alpha: only alpha 0 goes black — this is not premultiplication
+
+The vendor's picture encoder ignores the alpha channel outright:
+
+```js
+function te(J){ const ae=J.data; ...
+  const xe=ae[he], ve=ae[he+1], re=ae[he+2];   // bytes 0-2 only
+  ... }
+```
+
+Its input is a `getImageData()` from a **freshly created canvas with no black
+fill**, and drawing source-over onto a transparent backdrop preserves the
+un-premultiplied colour. So:
+
+| Source pixel | On the panel |
+|---|---|
+| `rgba(255,0,0,255)` | full red |
+| `rgba(255,0,0,128)` | **full red** — alpha discarded, not blended |
+| `rgba(255,0,0,0)` | black — the canvas reads it back as `(0,0,0,0)` |
+
+A cross-review round read this repo's plan prose and asked for
+`out = src * alpha` instead (PR #4). That formula was a guess in the plan,
+never the device's behaviour. The `if (data[i+3] === 0)` black pre-pass that
+does exist in the vendor bundle belongs to its **GIF** path, which is a
+different code path from the one this milestone implements.
+
+Practical consequence: a logo with soft, semi-transparent edges will show
+those edge pixels at full colour against black rather than faded into it.
+Pre-flatten the file onto the background you want if that matters.
+
+### How this was verified
+
+`fixtures/picture-upload.json` is not a transcription of the capture. It is
+**regenerated from `fixtures/test-quadrants.png` through the model above** by
+`scripts/build-fixtures.js`, and then compared against
+`fixtures/raw/cap-picture-upload-hidlog.json` — real traffic read out of the
+vendor tool's own WebHID calls — by `scripts/check-raw-consistency.js`.
+
+That makes the check model-versus-hardware rather than file-versus-copy, so
+a mistake in channel order, per-pixel byte order, row order, chunk size,
+offset encoding, the final length byte, or the checksum shows up as a byte
+mismatch in `bin/ci`. Result: **0 mismatches across all 552 reports and all
+30720 pixel bytes.**
+
+The test image is a four-quadrant + gradient pattern precisely because solid
+colours cannot distinguish any of those things.
+
+### Hardware gate (2026-08-11, all confirmed visually on the real panel)
+
+| Check | Input | Result |
+|---|---|---|
+| Byte-exact reproduction | `test-quadrants.png`, 160×96 | Red TL, green TR, blue BL, gradient BR — as sent by the vendor's own tool |
+| Transparency → black | 200×120 RGBA, no background | Yellow circle and blue rectangle on a **black** field |
+| Resize from a different size | 200×120 and 640×360 | Both fill the panel correctly |
+| JPEG decoding | 640×360 JPEG | Gradient rendered, **white square top-left**, black bottom-right — so row and column order are right end to end |
+| Re-upload replaces cleanly | three uploads in a row | Each fully replaced the last, no tearing or leftovers |
+| Does upload switch pages? | panel left on the home page | **Yes** — the clock stayed up during the upload and the image appeared when it finished. No `switch-page picture` needed. |
+| `switch-page` still works after | `switch-page home` between uploads | Clock and battery returned normally |
+
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
 **Resolved** — every transmit-required field for "Update device time": HID op
@@ -314,27 +457,59 @@ checksum variants, the full clock+date payload layout, AND (as of Milestone
 11/13/15) and clear-picture (cmd 14), above — cmd15's bytes are resolved
 even though it's not shipped as a CLI command (see below).
 
+**As of Milestone 3**: the full picture-upload format (cmd16 start, cmd12
+declare-size, the bulk packet layout, and the RGB565 pixel encoding), plus
+the checksum correction above. Also resolved, though not shipped: **why
+cmd15 appeared not to switch to the GIF page** — see below.
+
 **Unresolved** (named, not silently missing): the numeric meaning of the
-`finish` command's constant length byte (`0x38`); "Clear GIF" (cmd 18/19) —
-identified and its checksums verified, but 2 trailing payload bytes have
-unknown meaning, so it's not shipped as a CLI command; **why "switch to
-the GIF page" (cmd15) doesn't visually switch the TFT**, even with bytes
-proven identical to the vendor's own tool — so `switch-page` only accepts
-`home`/`picture`, not `gif` (see the section above and `fields.json`);
-whether `clear-picture` affects a stored GIF, blocked on the same GIF-page
-question; picture/GIF upload payload format entirely (out of scope so
-far).
+`finish` command's constant length byte (`0x38`); whether `clear-picture`
+affects a stored GIF; the 2.4 GHz dongle and Bluetooth connection modes; any
+connect/init traffic before the first command. GIF upload is **decoded but
+not implemented** — that is a milestone, not an unknown.
+
+### The GIF-page mystery, solved
+
+Milestone 2 recorded that "switch to the GIF page" (cmd15) did not visibly
+switch the panel, even though its bytes were proven identical to the
+vendor's own button, and left it open.
+
+cmd15 was never the problem. Reading the vendor bundle showed its GIF save
+is not one action but **three modes**, selected by a byte Milestone 2 had
+recorded as a fixed `0x00`:
+
+| Mode | Button | Max frames | Size |
+|---|---|---|---|
+| 0 | Set it as the startup animation | 64 | 160×96 |
+| 1 | Save to the device | 160 | 160×96 |
+| 2 | Save GIF to the device home page | 42 | 96×64 |
+
+Mode 2's button only renders when the product ID is `12463`; this keyboard
+is `12744`, so the vendor's UI hides it. Nothing on the wire enforces that.
+
+Every earlier attempt used **mode 0**, which stores the frames somewhere
+that never plays — not on the GIF page, and not at power-up either (tested:
+after a replug the panel shows the home screen). Re-saving the same GIF with
+**mode 1** makes it play on the TFT immediately. There was simply nothing on
+the GIF page to show.
+
+This also re-labels cmd18/cmd19. They are not "Clear GIF": they are GIF
+session **open** and **close**, and their trailing bytes are parameters —
+the closing pair carries the frame count and the frame rate (a 2-frame save
+at 30 fps closes with `0x02` and `0x1e`). Between them the vendor sends, per
+frame, cmd16 with a frame index, cmd17 declaring 30720 bytes, and then the
+same 56-byte bulk packets this milestone implements.
 
 ## What's next
 
-Milestone 1 (`set-time`) and Milestone 2 (`switch-page home`/`picture`,
-`clear-picture`) ship the Rust CLI for these commands, see `README.md`.
-What's left: the GIF-page display mystery (cmd15's bytes are correct but
-something else is needed to make the page actually show — try "set as
-startup animation" or a physical button press next), "Clear GIF" (needs
-another capture pass to resolve its trailing bytes), a `ratatui` screen
-(once there's more than one action worth navigating between), and further
-milestones for sliders, toggles, and image/GIF upload — each needs its own
-discovery pass first, same process as this document. The generic
-opcode/checksum/report-structure model above should carry over directly;
-only the opcode-specific payload layout will differ per command.
+Milestones 1-3 ship `set-time`, `switch-page home`/`picture`,
+`clear-picture`, and `set-picture` — see `README.md`.
+
+**GIF upload is the natural next milestone**, and it is mostly built
+already: a GIF frame is exactly one picture frame, so it reuses
+`rgb565_encode` and the bulk chunker unchanged and adds only the per-frame
+cmd16/cmd17 pair and the cmd18/cmd19 session wrapper with mode 1. After
+that: sliders and toggles (brightness, chroma, saturation, grayscale,
+"fuzzy", sharpening), the vendor's "in the middle" vs "cover up completely"
+placement setting, and a `ratatui` screen once there is more than one action
+worth navigating between.
