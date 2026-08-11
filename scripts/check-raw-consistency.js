@@ -17,28 +17,23 @@ function fail(msg) { console.error(`FAIL: ${msg}`); failures++; }
 function ok(msg) { console.log(`OK:   ${msg}`); }
 
 // Each pair: a raw evidence file (fixtures/raw/*.json) and the polished
-// fixture it must match byte-for-byte, plus a matcher that maps a raw
-// entry's cmd number to the command_name prefix used in the polished
-// fixture's reports.
+// fixture it must match byte-for-byte AND in exact order. Both files are
+// built (by scripts/build-fixtures.js and the raw-evidence generator
+// respectively) by iterating the same command list in the same order, so a
+// strict index-by-index comparison is the correct check here -- it is also
+// what catches a report silently landing out of sequence, which a
+// filter/multi-match comparison (an earlier version of this script) could
+// not: round-1 cross-review (codex Blocker, PR #3) found that version only
+// asserted "some report with this command/direction/opcode matches
+// somewhere," which passed even for clear-picture's now-fixed evidence gap
+// (only 1 of 16 repeats was stored) without ever checking count or order.
 const PAIRS = [
-  {
-    rawFile: 'raw/cap1-hidlog.json',
-    fixtureFile: 'cap1.json',
-    cmdPrefix: (cmd) => (cmd === 9 ? 'cmd9' : 'cmd10'),
-  },
-  {
-    rawFile: 'raw/cap-page-switch-hidlog.json',
-    fixtureFile: 'page-switch.json',
-    cmdPrefix: (cmd) => `cmd${cmd}`,
-  },
-  {
-    rawFile: 'raw/cap-clear-picture-hidlog.json',
-    fixtureFile: 'clear-picture.json',
-    cmdPrefix: (cmd) => `cmd${cmd}`,
-  },
+  { rawFile: 'raw/cap1-hidlog.json', fixtureFile: 'cap1.json' },
+  { rawFile: 'raw/cap-page-switch-hidlog.json', fixtureFile: 'page-switch.json' },
+  { rawFile: 'raw/cap-clear-picture-hidlog.json', fixtureFile: 'clear-picture.json' },
 ];
 
-for (const { rawFile, fixtureFile, cmdPrefix } of PAIRS) {
+for (const { rawFile, fixtureFile } of PAIRS) {
   const raw = load(rawFile);
   const fixture = load(fixtureFile);
 
@@ -50,26 +45,30 @@ for (const { rawFile, fixtureFile, cmdPrefix } of PAIRS) {
     if (n !== 64) fail(`${rawFile}: ${e.dir} ${e.opcode} cmd${e.cmd} is ${n} bytes, expected 64`);
   }
 
-  for (const rawEntry of raw.entries) {
-    const opcode = parseInt(rawEntry.opcode, 16);
-    const prefix = cmdPrefix(rawEntry.cmd);
-    const matches = fixture.reports.filter(
-      (r) => r.command_name.startsWith(prefix) && r.direction === rawEntry.dir && parseInt(r.opcode_hex, 16) === opcode
+  if (raw.entries.length !== fixture.reports.length) {
+    fail(
+      `${rawFile} has ${raw.entries.length} entries but ${fixtureFile} has ${fixture.reports.length} reports -- counts must match exactly (no sampling/summarizing on either side)`
     );
-    if (matches.length === 0) {
-      fail(`no ${fixtureFile} report matches raw entry ${rawEntry.dir}/${rawEntry.opcode}/cmd${rawEntry.cmd} (from ${rawFile})`);
+    continue;
+  }
+
+  for (let i = 0; i < raw.entries.length; i++) {
+    const rawEntry = raw.entries[i];
+    const report = fixture.reports[i];
+    const rawOpcode = parseInt(rawEntry.opcode, 16);
+    const reportOpcode = parseInt(report.opcode_hex, 16);
+    const label = `${fixtureFile}[${i}] "${report.command_name}" (${report.direction}) vs ${rawFile}[${i}]`;
+
+    if (report.direction !== rawEntry.dir || reportOpcode !== rawOpcode) {
+      fail(
+        `${label}: direction/opcode mismatch at the SAME index -- raw is ${rawEntry.dir}/${rawEntry.opcode}, fixture is ${report.direction}/${report.opcode_hex}. Reports are out of order.`
+      );
       continue;
     }
-    // A command can legitimately have more than one matching report of the
-    // same opcode/direction (e.g. clear-picture's raw evidence stores one
-    // representative pair while the built sequence repeats it 16x) -- every
-    // match must agree with the raw bytes exactly.
-    for (const match of matches) {
-      if (match.payload_hex !== rawEntry.hex) {
-        fail(`${fixtureFile} "${match.command_name}" (${match.direction}) does not match raw evidence in ${rawFile}:\n  raw:     ${rawEntry.hex}\n  fixture: ${match.payload_hex}`);
-      } else {
-        ok(`${fixtureFile} "${match.command_name}" (${match.direction}) matches raw capture exactly`);
-      }
+    if (report.payload_hex !== rawEntry.hex) {
+      fail(`${label}: bytes don't match:\n  raw:     ${rawEntry.hex}\n  fixture: ${report.payload_hex}`);
+    } else {
+      ok(`${label}: matches raw capture exactly, same position`);
     }
   }
 }

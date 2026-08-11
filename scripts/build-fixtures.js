@@ -212,14 +212,25 @@ function buildPageSwitchFixture() {
   };
 }
 
+// Round-1 cross-review Blocker (codex + antigravity, PR #3): storing only
+// one representative info+finish pair for clear-picture let bin/ci pass
+// without proving the 16x repeat count or exact report order against real
+// evidence -- the "16x" claim was prose (repeat_structure notes) only, not
+// something check-raw-consistency.js actually verified byte-for-byte. Fixed
+// by storing ALL 16 repeats (all 32 out reports + their 32 ACKs = 64
+// entries) here, not a sample -- every repeat is independently confirmed
+// byte-identical to the others (the command carries no per-iteration
+// state), but the point is that the evidence file and the consistency
+// check now assert that directly, not just claim it in a comment.
 function buildClearPictureFixture() {
   const { cmd, name, payload, checksum } = CLEAR_PICTURE;
   const infoOut = infoPackageOut(payload, checksum);
+  const infoAck = withAckFlip(infoOut);
   const reports = [];
-  function push(commandName, opcode, direction, bytes) {
+  function push(commandIndex, commandName, opcode, direction, bytes) {
     reports.push({
       transaction_id: 'clear-picture',
-      command_index: 0,
+      command_index: commandIndex,
       command_name: commandName,
       fragment_index: 0,
       opcode_hex: '0x' + opcode.toString(16).padStart(2, '0'),
@@ -229,16 +240,18 @@ function buildClearPictureFixture() {
       payload_hex: toHexBytes(bytes),
     });
   }
-  push(`cmd${cmd}-${name}-infoPackage`, 0x40, 'out', infoOut);
-  push(`cmd${cmd}-${name}-infoPackage-ACK`, 0x40, 'in', withAckFlip(infoOut));
-  push(`cmd${cmd}-${name}-finish`, 0x42, 'out', FINISH_OUT);
-  push(`cmd${cmd}-${name}-finish-ACK`, 0x42, 'in', FINISH_ACK);
+  for (let repeat = 0; repeat < 16; repeat++) {
+    push(repeat, `cmd${cmd}-${name}-infoPackage`, 0x40, 'out', infoOut);
+    push(repeat, `cmd${cmd}-${name}-infoPackage-ACK`, 0x40, 'in', infoAck);
+    push(repeat, `cmd${cmd}-${name}-finish`, 0x42, 'out', FINISH_OUT);
+    push(repeat, `cmd${cmd}-${name}-finish-ACK`, 0x42, 'in', FINISH_ACK);
+  }
   return {
     transaction_id: 'clear-picture',
     connection_mode: 'usb-cable',
     interface_identity: cap1.interface_identity,
     browser: 'Chrome (claude-in-chrome automation)',
-    note: 'The "Clear the picture" button, captured live this session (2026-08-11). One representative info+finish pair is stored here; the full raw HID log (fixtures/raw/cap-clear-picture-hidlog.json) confirms the vendor JS\'s `for(a=0;a<16;a++)` loop is real -- exactly 16 repeats of this same info+finish pair (32 reports total), byte-identical every time (the command carries no per-iteration state). This mirrors cap3\'s repeat_structure pattern for set-time\'s 3x loop.',
+    note: 'The "Clear the picture" button, captured live this session (2026-08-11). ALL 16 repeats of the info+finish pair are stored here (64 reports: 16x[infoPackage,infoPackage-ACK,finish,finish-ACK]), not a single representative sample -- matching the vendor JS\'s `for(a=0;a<16;a++)` loop exactly. Every repeat is byte-identical to the others (the command carries no per-iteration state), which is now asserted by scripts/check-raw-consistency.js\'s index-based (order-sensitive) comparison against fixtures/raw/cap-clear-picture-hidlog.json, not just claimed in this note.',
     repeat_structure: {
       repeat_count: 16,
       note: 'Confirmed by full raw HID log event count for one "Clear the picture" click: 16 out info-packages + 16 out finishes (32 total out), each with a matching in-ACK (64 total events) -- matches the vendor source\'s literal for(a=0;a<16;a++) loop exactly, and is a much larger repeat count than set-time\'s 3x, so was checked by counting rather than assumed from the source alone.',

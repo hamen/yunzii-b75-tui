@@ -32,11 +32,14 @@ USB ID 28e9:31c8  GDMicroelectronics YUNZII B75 PRO MAX Keyboard
 
 **⏰ `set-time`, 🖼️ `switch-page`, and 🧹 `clear-picture` work!** Their
 protocols are fully decoded (see `PROTOCOL.md`) with native CLI commands for
-each. No `ratatui` screen yet — CLI-only, done well. "Clear GIF" is
-decoded-but-deferred (2 trailing payload bytes not yet understood — see
-`PROTOCOL.md`). Sliders, toggles, and image/GIF upload aren't implemented
-yet; each gets its own reverse-engineering pass first, same process as
-`set-time` below. 🚧
+each. `switch-page home` and `switch-page picture` are visually confirmed on
+real hardware; `switch-page gif` was sent and cleanly ACK'd but **not**
+visually confirmed (the test device has no GIF uploaded) — see
+`PROTOCOL.md` for the honest caveat. No `ratatui` screen yet — CLI-only,
+done well. "Clear GIF" is decoded-but-deferred (2 trailing payload bytes not
+yet understood — see `PROTOCOL.md`). Sliders, toggles, and image/GIF upload
+aren't implemented yet; each gets its own reverse-engineering pass first,
+same process as `set-time` below. 🚧
 
 ---
 
@@ -51,6 +54,11 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ./target/release/yunzii-b75-tui switch-page home    # or: picture, gif
 ./target/release/yunzii-b75-tui clear-picture
 ```
+
+`clear-picture` sends 32 reports (16 repeats); like `set-time`, a failure
+partway through aborts the whole transaction rather than silently
+continuing, but could leave the picture only partially cleared — the same
+risk class as `set-time`'s partial-clock-update risk, not a new one.
 
 The udev rule grants access to **all** of the keyboard's `hidraw`
 interfaces for this VID/PID (there's no finer-grained udev match available),
@@ -97,8 +105,11 @@ guessing at the byte format blind, this repo:
 
 See `PROTOCOL.md` for the decoded format, `fixtures/` for the decoded
 per-capture evidence (checksums and structure independently re-verified
-against the real device), and `fixtures/raw/` for a minimally processed
-capture log that `fixtures/cap1.json` is checked against byte-for-byte.
+against the real device), and `fixtures/raw/` for minimally processed
+capture logs — `scripts/check-raw-consistency.js` checks each of
+`fixtures/cap1.json`, `fixtures/page-switch.json`, and
+`fixtures/clear-picture.json` against its own raw log byte-for-byte, in
+exact order.
 
 ---
 

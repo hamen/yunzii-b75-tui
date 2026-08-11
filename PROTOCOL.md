@@ -236,10 +236,12 @@ full raw HID log for one click, not just trusting the source.
 **Real-hardware verification (Milestone 2, 2026-08-11)**: `switch-page
 home` and `switch-page picture` were visually confirmed on the physical
 TFT — the screen genuinely changed to the expected page each time,
-including switching correctly right after a `clear-picture` run, and
-`switch-page home` while already on the home page was a clean no-op (no
-error). `clear-picture` was visually confirmed to remove the picture from
-the screen, and running it again on an already-empty slot was a clean
+including switching correctly right after a `clear-picture` run. `switch-page
+home` while already on the home page was a clean no-op (no error) —
+**this already-active-page no-op check was only run for `home`, not
+`picture` or `gif`**, named explicitly rather than implied as covered for
+all three. `clear-picture` was visually confirmed to remove the picture
+from the screen, and running it again on an already-empty slot was a clean
 no-op. **`switch-page gif` was sent and cleanly ACK'd (no error) but
 produced no visible change** — the test keyboard has no GIF ever uploaded
 (only a factory-default static picture in the picture slot), so this is
@@ -247,6 +249,10 @@ consistent with an "empty GIF slot" no-op rather than a wrong command, but
 is weaker evidence than the visual confirmations for home/picture — named
 as such rather than folded into the same "confirmed" claim. A future test
 with an actual GIF uploaded would give a definitive visual check.
+**Whether `clear-picture` leaves a separately-stored GIF untouched was
+also NOT tested** — the same "no GIF on the test device" limitation — so
+this is an open question for a future capture with GIF content actually
+present, not a claim made and left unverified.
 
 **"Clear GIF" is a different, deferred command — not shipped.** It looked
 at first like it might share a handler with "Clear the picture" (the

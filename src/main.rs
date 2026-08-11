@@ -49,7 +49,9 @@ enum Commands {
     },
     /// Switch the TFT screen to the given page.
     SwitchPage { page: PageArg },
-    /// Clear the currently-displayed picture. Does not affect a GIF.
+    /// Clear the currently-displayed picture. Whether this affects a
+    /// separately-stored GIF was not tested (see PROTOCOL.md) -- the
+    /// keyboard used for hardware verification had no GIF uploaded.
     ClearPicture,
 }
 
@@ -219,5 +221,26 @@ mod cli_tests {
             protocol::Page::Picture
         );
         assert_eq!(protocol::Page::from(PageArg::Gif), protocol::Page::Gif);
+    }
+
+    // Plan (Milestone 2, step 6) explicitly called for CLI dispatch tests
+    // asserting home->11, picture->13, gif->15 as inner cmd BYTES, not just
+    // that PageArg maps to the right protocol::Page variant -- this closes
+    // that gap by inspecting the actual wire byte the parsed CLI arg
+    // produces (round-1 cross-review, cursor SF3, PR #3).
+    #[test]
+    fn cli_page_name_maps_to_correct_inner_cmd_byte() {
+        const CMD_BYTE_OFFSET: usize = 9; // payload = report[7..], cmd = payload[2]
+        for (page_name, expected_cmd_byte) in [("home", 11u8), ("picture", 13), ("gif", 15)] {
+            let cli = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", page_name]).unwrap();
+            let Commands::SwitchPage { page } = cli.command else {
+                panic!("expected SwitchPage");
+            };
+            let sequence = protocol::build_page_switch_sequence(page.into());
+            assert_eq!(
+                sequence[0][CMD_BYTE_OFFSET], expected_cmd_byte,
+                "{page_name}: expected inner cmd byte {expected_cmd_byte}"
+            );
+        }
     }
 }
