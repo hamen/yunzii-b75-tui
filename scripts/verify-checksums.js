@@ -42,6 +42,34 @@ assertEqual('vendor inner CRC ga([10,0,4])', ga([10, 0, 4]), [1, 80]);
 assertEqual('outer checksum for D (opcode 0x40, len 7)', outerChecksum16(0x40, D.length, D), [0xf6, 0x02]);
 assertEqual('outer checksum for T (opcode 0x40, len 7)', outerChecksum16(0x40, T.length, T), [0xa5, 0x01]);
 
+// Milestone 2 commands (page-switch, clear-picture) -- live-captured
+// 2026-08-11, checksum bytes are the REAL values observed on the wire.
+const CMD11 = [165, 90, 11, 0, 0, 2, 0];
+const CMD13 = [165, 90, 13, 0, 0, 3, 224];
+const CMD15 = [165, 90, 15, 0, 0, 195, 65];
+const CMD14 = [165, 90, 14, 0, 0, 3, 16];
+
+assertEqual('vendor inner CRC ga([11,0,0])', ga([11, 0, 0]), [2, 0]);
+assertEqual('vendor inner CRC ga([13,0,0])', ga([13, 0, 0]), [3, 224]);
+assertEqual('vendor inner CRC ga([15,0,0])', ga([15, 0, 0]), [195, 65]);
+assertEqual('vendor inner CRC ga([14,0,0])', ga([14, 0, 0]), [3, 16]);
+
+assertEqual('outer checksum for cmd11 (opcode 0x40, len 7)', outerChecksum16(0x40, CMD11.length, CMD11), [0x53, 0x01]);
+assertEqual('outer checksum for cmd13 (opcode 0x40, len 7)', outerChecksum16(0x40, CMD13.length, CMD13), [0x36, 0x02]);
+assertEqual('outer checksum for cmd15 (opcode 0x40, len 7)', outerChecksum16(0x40, CMD15.length, CMD15), [0x59, 0x02]);
+assertEqual('outer checksum for cmd14 (opcode 0x40, len 7)', outerChecksum16(0x40, CMD14.length, CMD14), [0x67, 0x01]);
+
+// "Clear GIF" (cmd18/cmd19) -- deferred, NOT shipped as a CLI command this
+// milestone (see fields.json unresolved[]), but its checksums are verified
+// here anyway since the bytes were captured and the formula applies cleanly
+// even to the still-unresolved parts of the payload.
+const CMD18 = [165, 90, 18, 0, 1, 5, 16, 1, 0];
+const CMD19 = [165, 90, 19, 0, 2, 196, 1, 1, 0];
+assertEqual('vendor inner CRC ga([18,0,1])', ga([18, 0, 1]), [5, 16]);
+assertEqual('vendor inner CRC ga([19,0,2])', ga([19, 0, 2]), [196, 1]);
+assertEqual('outer checksum for cmd18 (opcode 0x40, len 9)', outerChecksum16(0x40, CMD18.length, CMD18), [0x71, 0x01]);
+assertEqual('outer checksum for cmd19 (opcode 0x40, len 9)', outerChecksum16(0x40, CMD19.length, CMD19), [0x23, 0x02]);
+
 assertEqual('P cap1 [hour=19,min=24,sec=13]', outerChecksum8(0x41, 3, [19, 24, 13]), 0x7c);
 assertEqual('P cap2 [hour=19,min=28,sec=14]', outerChecksum8(0x41, 3, [19, 28, 14]), 0x81);
 assertEqual('P cap3 [hour=19,min=29,sec=55]', outerChecksum8(0x41, 3, [19, 29, 55]), 0xab);

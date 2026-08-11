@@ -2,7 +2,7 @@ mod device;
 mod protocol;
 mod time;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use device::{Device, DeviceError, ReportIdForm};
 
 #[derive(Parser)]
@@ -13,6 +13,26 @@ use device::{Device, DeviceError, ReportIdForm};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+/// clap-facing page selector -- kept separate from `protocol::Page` so
+/// `protocol.rs` stays CLI-agnostic (pure wire-format code, no clap
+/// dependency); `PageArg::into()` maps 1:1 to `protocol::Page`.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PageArg {
+    Home,
+    Picture,
+    Gif,
+}
+
+impl From<PageArg> for protocol::Page {
+    fn from(arg: PageArg) -> Self {
+        match arg {
+            PageArg::Home => protocol::Page::Home,
+            PageArg::Picture => protocol::Page::Picture,
+            PageArg::Gif => protocol::Page::Gif,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -27,12 +47,18 @@ enum Commands {
         #[arg(long)]
         debug_no_prefix: bool,
     },
+    /// Switch the TFT screen to the given page.
+    SwitchPage { page: PageArg },
+    /// Clear the currently-displayed picture. Does not affect a GIF.
+    ClearPicture,
 }
 
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
         Commands::SetTime { debug_no_prefix } => run_set_time(debug_no_prefix),
+        Commands::SwitchPage { page } => run_switch_page(page.into()),
+        Commands::ClearPicture => run_clear_picture(),
     };
 
     if let Err(e) = result {
@@ -91,4 +117,107 @@ fn run_set_time(debug_no_prefix: bool) -> Result<(), DeviceError> {
         "sent successfully using {form:?}. Check the keyboard's TFT screen for the correct time."
     );
     Ok(())
+}
+
+fn run_switch_page(page: protocol::Page) -> Result<(), DeviceError> {
+    let path = device::find_device()?;
+    println!("found device: {}", path.display());
+
+    let dev = Device::open(&path)?;
+    dev.drain().map_err(|e| e.with_reconnect_hint(&path))?;
+
+    let sequence = protocol::build_page_switch_sequence(page);
+    println!("built {} reports for {:?}", sequence.len(), page);
+
+    dev.send_sequence(ReportIdForm::LeadingZeroOnWrite, &sequence)
+        .map_err(|e| e.with_reconnect_hint(&path))?;
+    println!("sent successfully. Check the keyboard's TFT screen for the {page:?} page.");
+    Ok(())
+}
+
+fn run_clear_picture() -> Result<(), DeviceError> {
+    let path = device::find_device()?;
+    println!("found device: {}", path.display());
+
+    let dev = Device::open(&path)?;
+    dev.drain().map_err(|e| e.with_reconnect_hint(&path))?;
+
+    let sequence = protocol::build_clear_picture_sequence();
+    println!("built {} reports (16x info+finish repeat)", sequence.len());
+
+    dev.send_sequence(ReportIdForm::LeadingZeroOnWrite, &sequence)
+        .map_err(|e| e.with_reconnect_hint(&path))?;
+    println!(
+        "sent successfully. Check the keyboard's TFT screen -- the picture should be cleared."
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn parses_set_time() {
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "set-time"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::SetTime {
+                debug_no_prefix: false
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_switch_page_home() {
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", "home"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::SwitchPage {
+                page: PageArg::Home
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_switch_page_picture() {
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", "picture"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::SwitchPage {
+                page: PageArg::Picture
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_switch_page_gif() {
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", "gif"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::SwitchPage { page: PageArg::Gif }
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_page_name() {
+        let result = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", "nonsense"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_clear_picture() {
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "clear-picture"]).unwrap();
+        assert!(matches!(cli.command, Commands::ClearPicture));
+    }
+
+    #[test]
+    fn page_arg_maps_to_protocol_page() {
+        assert_eq!(protocol::Page::from(PageArg::Home), protocol::Page::Home);
+        assert_eq!(
+            protocol::Page::from(PageArg::Picture),
+            protocol::Page::Picture
+        );
+        assert_eq!(protocol::Page::from(PageArg::Gif), protocol::Page::Gif);
+    }
 }

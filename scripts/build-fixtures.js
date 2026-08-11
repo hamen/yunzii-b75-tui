@@ -144,3 +144,112 @@ for (const [name, obj] of [['cap1', cap1], ['cap2', cap2], ['cap3', cap3]]) {
   fs.writeFileSync(path.join(__dirname, '..', 'fixtures', `${name}.json`), JSON.stringify(obj, null, 2) + '\n');
   console.log(`wrote fixtures/${name}.json`);
 }
+
+// --- Milestone 2: page-switch (cmd11/13/15) and clear-picture (cmd14) ---
+//
+// Same discipline as above: short real payload arrays + observed checksum
+// bytes, captured live this session via scripts/capture-hook.js while
+// clicking each button on the real keyboard (see the Milestone 2 plan's
+// "Raw evidence & anti-circularity" section for the full methodology note,
+// including the 4th recurrence of the hand-typed-hex transcription bug this
+// session -- caught in a throwaway manual cross-check, not in this data).
+// ACK bytes are NOT independently re-observed per command here -- they are
+// constructed from the OUT bytes with only byte[6] flipped 0x00->0x55,
+// which Milestone 1 established and confirmed against real hardware as the
+// device's general ACK shape (src/device.rs `is_valid_ack`). This is stated
+// explicitly rather than presented as a fresh independent observation.
+
+function withAckFlip(outBytes) {
+  const ack = outBytes.slice();
+  ack[6] = 0x55;
+  return ack;
+}
+
+// [payload, observed checksum16le as [lo, hi]] -- checksum bytes are the
+// REAL values read from the live capture, independently recomputed by
+// check-coverage.js and verify-checksums.js against the outer-checksum
+// formula as the actual independence check.
+const PAGE_SWITCH_COMMANDS = [
+  { cmd: 11, name: 'switch-homepage', payload: [165, 90, 11, 0, 0, 2, 0], checksum: [0x53, 0x01] },
+  { cmd: 13, name: 'switch-picture-page', payload: [165, 90, 13, 0, 0, 3, 224], checksum: [0x36, 0x02] },
+  { cmd: 15, name: 'switch-gif-page', payload: [165, 90, 15, 0, 0, 195, 65], checksum: [0x59, 0x02] },
+];
+const CLEAR_PICTURE = { cmd: 14, name: 'clear-picture', payload: [165, 90, 14, 0, 0, 3, 16], checksum: [0x67, 0x01] };
+
+function infoPackageOut(payload, checksumLoHi) {
+  return padTo64([0x40, 0, 0, payload.length, checksumLoHi[0], checksumLoHi[1], 0x00, ...payload]);
+}
+
+function buildPageSwitchFixture() {
+  const reports = [];
+  function push(commandIndex, commandName, opcode, direction, bytes) {
+    reports.push({
+      transaction_id: 'page-switch',
+      command_index: commandIndex,
+      command_name: commandName,
+      fragment_index: 0,
+      opcode_hex: '0x' + opcode.toString(16).padStart(2, '0'),
+      direction,
+      hid_method: direction === 'in' ? 'input-report' : 'output-report',
+      report_id: 0,
+      payload_hex: toHexBytes(bytes),
+    });
+  }
+  PAGE_SWITCH_COMMANDS.forEach(({ cmd, name, payload, checksum }, i) => {
+    const infoOut = infoPackageOut(payload, checksum);
+    push(i, `cmd${cmd}-${name}-infoPackage`, 0x40, 'out', infoOut);
+    push(i, `cmd${cmd}-${name}-infoPackage-ACK`, 0x40, 'in', withAckFlip(infoOut));
+    push(i, `cmd${cmd}-${name}-finish`, 0x42, 'out', FINISH_OUT);
+    push(i, `cmd${cmd}-${name}-finish-ACK`, 0x42, 'in', FINISH_ACK);
+  });
+  return {
+    transaction_id: 'page-switch',
+    connection_mode: 'usb-cable',
+    interface_identity: cap1.interface_identity,
+    browser: 'Chrome (claude-in-chrome automation)',
+    note: 'All 3 "Equipment setup" page-switch buttons (homepage/picture/gif), captured live this session (2026-08-11) via scripts/capture-hook.js. Each is a 2-report sequence: info-package(0x40) + finish(0x42), no data-packet -- unlike set-time, none of these commands send a follow-up 0x41 report.',
+    reports,
+  };
+}
+
+function buildClearPictureFixture() {
+  const { cmd, name, payload, checksum } = CLEAR_PICTURE;
+  const infoOut = infoPackageOut(payload, checksum);
+  const reports = [];
+  function push(commandName, opcode, direction, bytes) {
+    reports.push({
+      transaction_id: 'clear-picture',
+      command_index: 0,
+      command_name: commandName,
+      fragment_index: 0,
+      opcode_hex: '0x' + opcode.toString(16).padStart(2, '0'),
+      direction,
+      hid_method: direction === 'in' ? 'input-report' : 'output-report',
+      report_id: 0,
+      payload_hex: toHexBytes(bytes),
+    });
+  }
+  push(`cmd${cmd}-${name}-infoPackage`, 0x40, 'out', infoOut);
+  push(`cmd${cmd}-${name}-infoPackage-ACK`, 0x40, 'in', withAckFlip(infoOut));
+  push(`cmd${cmd}-${name}-finish`, 0x42, 'out', FINISH_OUT);
+  push(`cmd${cmd}-${name}-finish-ACK`, 0x42, 'in', FINISH_ACK);
+  return {
+    transaction_id: 'clear-picture',
+    connection_mode: 'usb-cable',
+    interface_identity: cap1.interface_identity,
+    browser: 'Chrome (claude-in-chrome automation)',
+    note: 'The "Clear the picture" button, captured live this session (2026-08-11). One representative info+finish pair is stored here; the full raw HID log (fixtures/raw/cap-clear-picture-hidlog.json) confirms the vendor JS\'s `for(a=0;a<16;a++)` loop is real -- exactly 16 repeats of this same info+finish pair (32 reports total), byte-identical every time (the command carries no per-iteration state). This mirrors cap3\'s repeat_structure pattern for set-time\'s 3x loop.',
+    repeat_structure: {
+      repeat_count: 16,
+      note: 'Confirmed by full raw HID log event count for one "Clear the picture" click: 16 out info-packages + 16 out finishes (32 total out), each with a matching in-ACK (64 total events) -- matches the vendor source\'s literal for(a=0;a<16;a++) loop exactly, and is a much larger repeat count than set-time\'s 3x, so was checked by counting rather than assumed from the source alone.',
+    },
+    reports,
+  };
+}
+
+const pageSwitch = buildPageSwitchFixture();
+const clearPicture = buildClearPictureFixture();
+for (const [name, obj] of [['page-switch', pageSwitch], ['clear-picture', clearPicture]]) {
+  fs.writeFileSync(path.join(__dirname, '..', 'fixtures', `${name}.json`), JSON.stringify(obj, null, 2) + '\n');
+  console.log(`wrote fixtures/${name}.json`);
+}

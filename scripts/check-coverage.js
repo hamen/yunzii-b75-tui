@@ -92,6 +92,10 @@ for (const file of fixtureFiles) {
       const cmdByte = payload[2];
       const known = cmdByte === 9 ? fields.commands.cmd9_setClock.infoPackagePayload.value
                   : cmdByte === 10 ? fields.commands.cmd10_setDate.infoPackagePayload.value
+                  : cmdByte === 11 ? fields.commands.cmd11_switchToHomepage.infoPackagePayload.value
+                  : cmdByte === 13 ? fields.commands.cmd13_switchToPicturePage.infoPackagePayload.value
+                  : cmdByte === 14 ? fields.commands.cmd14_clearPicture.infoPackagePayload.value
+                  : cmdByte === 15 ? fields.commands.cmd15_switchToGifPage.infoPackagePayload.value
                   : null;
       if (known && JSON.stringify(payload) !== JSON.stringify(known)) {
         fail(`${label}: info-package payload ${JSON.stringify(payload)} != declared constant ${JSON.stringify(known)}`);

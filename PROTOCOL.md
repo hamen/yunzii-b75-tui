@@ -214,6 +214,54 @@ encoding logic being unit-tested against every day of the week
 evidence than a visual check, and intentionally not folded into the same
 "confirmed" claim as hour/minute/date.
 
+## Page switch and clear-picture — resolved (Milestone 2)
+
+Four more commands, live HID-captured on 2026-08-11 (`fixtures/page-switch.json`,
+`fixtures/clear-picture.json`, and their `fixtures/raw/` evidence):
+
+| Button | Inner cmd | Sequence | Info-package payload |
+|---|---|---|---|
+| Switch to the homepage | 11 | infoPackage → finish (2 reports) | `[165,90,11,0,0,2,0]` |
+| Switch to the picture page | 13 | infoPackage → finish (2 reports) | `[165,90,13,0,0,3,224]` |
+| Switch to the GIF page | 15 | infoPackage → finish (2 reports) | `[165,90,15,0,0,195,65]` |
+| Clear the picture | 14 | infoPackage → finish, **repeated 16x** (32 reports) | `[165,90,14,0,0,3,16]` |
+
+None of these send a follow-up `0x41` data-packet — unlike `set-time`, the
+info-package alone carries the whole command, and `finish` (the same
+constant `38 7a 00...` bytes as `set-time`'s) closes it out. The 16x repeat
+for "Clear the picture" matches the vendor source's literal
+`for(a=0;a<16;a++)` loop and was independently confirmed by counting the
+full raw HID log for one click, not just trusting the source.
+
+**Real-hardware verification (Milestone 2, 2026-08-11)**: `switch-page
+home` and `switch-page picture` were visually confirmed on the physical
+TFT — the screen genuinely changed to the expected page each time,
+including switching correctly right after a `clear-picture` run, and
+`switch-page home` while already on the home page was a clean no-op (no
+error). `clear-picture` was visually confirmed to remove the picture from
+the screen, and running it again on an already-empty slot was a clean
+no-op. **`switch-page gif` was sent and cleanly ACK'd (no error) but
+produced no visible change** — the test keyboard has no GIF ever uploaded
+(only a factory-default static picture in the picture slot), so this is
+consistent with an "empty GIF slot" no-op rather than a wrong command, but
+is weaker evidence than the visual confirmations for home/picture — named
+as such rather than folded into the same "confirmed" claim. A future test
+with an actual GIF uploaded would give a definitive visual check.
+
+**"Clear GIF" is a different, deferred command — not shipped.** It looked
+at first like it might share a handler with "Clear the picture" (the
+vendor's own internal function name, `clearPictureOrGif_loop16x`, implies
+that), but live capture shows it's structurally unrelated: two different
+inner commands (18, then 19), each sent once — no 16x loop — each with a
+9-byte info-package payload (2 bytes longer than every other command here).
+Both fit the established checksum pattern, but 2 trailing bytes on each
+(`[1,0]`) have unknown meaning, and no data-packet is ever sent despite the
+payload's `N` byte looking like it should signal one. See `fields.json`'s
+`unresolved` list for the full detail and what a follow-up capture would
+need to resolve it — deferring an under-understood command rather than
+shipping it on "the checksum matches" is the same discipline `set-time`'s
+still-unexplained `finish` length byte gets.
+
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
 **Resolved** — every transmit-required field for "Update device time": HID op
@@ -223,19 +271,23 @@ hash, USB interface number, ACL — see `fields.json`'s
 `linuxInterfaceIdentity`), opcode table, outer report structure, both
 checksum variants, the full clock+date payload layout, AND (as of Milestone
 1) the native hidraw write/read byte layout and real ACK count, above.
+**As of Milestone 2**: page-switch (home/picture/gif, cmd 11/13/15) and
+clear-picture (cmd 14), above.
 
 **Unresolved** (named, not silently missing): the numeric meaning of the
-`finish` command's constant length byte (`0x38`); opcodes for other screen
-commands (switch page, clear picture/GIF) — identified by name from the
-vendor source but not yet independently HID-captured; picture/GIF upload
-payload format entirely (out of scope so far).
+`finish` command's constant length byte (`0x38`); "Clear GIF" (cmd 18/19) —
+identified and its checksums verified, but 2 trailing payload bytes have
+unknown meaning, so it's not shipped as a CLI command (see the section
+above and `fields.json`); picture/GIF upload payload format entirely (out
+of scope so far).
 
 ## What's next
 
-Milestone 1 (this repo's native `set-time` CLI, see `README.md`) already
-ships the Rust implementation for this one command. What's left: a
-`ratatui` screen (once there's more than one action worth navigating
-between), and Milestones 2/3 (sliders, toggles, image/GIF upload) — each
-needs its own discovery pass first, same process as this document. The
-generic opcode/checksum/report-structure model above should carry over
-directly; only the opcode-specific payload layout will differ per command.
+Milestone 1 (`set-time`) and Milestone 2 (page-switch, clear-picture) ship
+the Rust CLI for these commands, see `README.md`. What's left: "Clear GIF"
+(needs another capture pass to resolve its trailing bytes), a `ratatui`
+screen (once there's more than one action worth navigating between), and
+further milestones for sliders, toggles, and image/GIF upload — each needs
+its own discovery pass first, same process as this document. The generic
+opcode/checksum/report-structure model above should carry over directly;
+only the opcode-specific payload layout will differ per command.

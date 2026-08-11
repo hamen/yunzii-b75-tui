@@ -492,9 +492,12 @@ impl Device {
         Ok(())
     }
 
-    /// Sends a full sequence (all 18 reports for "set time"), aborting the
-    /// whole transaction on the first report that doesn't get clean ACKs --
-    /// a partially-applied clock/date is worse than a clean stop.
+    /// Sends an arbitrary sequence of reports in order (18 for "set time", 2
+    /// for a page switch, 32 for clear-picture, or any other command's
+    /// sequence), aborting the whole transaction on the first report that
+    /// doesn't get clean ACKs -- a partially-applied command is worse than a
+    /// clean stop. This function has no per-command knowledge; the caller
+    /// (`protocol.rs`'s builders) decides what the reports mean.
     pub fn send_sequence(
         &self,
         form: ReportIdForm,

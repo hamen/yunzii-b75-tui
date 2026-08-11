@@ -31,6 +31,41 @@ pub const CMD9_INFO_PAYLOAD: [u8; 7] = [165, 90, 9, 0, 3, 195, 225];
 /// The cmd-10 (set date) info-package payload, same structure.
 pub const CMD10_INFO_PAYLOAD: [u8; 7] = [165, 90, 10, 0, 4, 1, 80];
 
+/// The cmd-11 (switch to homepage) info-package payload -- constant, no
+/// data-packet follows. See fields.json's `commands.cmd11_switchToHomepage`.
+pub const CMD11_INFO_PAYLOAD: [u8; 7] = [165, 90, 11, 0, 0, 2, 0];
+
+/// The cmd-13 (switch to picture page) info-package payload.
+pub const CMD13_INFO_PAYLOAD: [u8; 7] = [165, 90, 13, 0, 0, 3, 224];
+
+/// The cmd-14 (clear the picture) info-package payload. The full
+/// clear-picture command repeats the info+finish pair 16 times -- see
+/// `build_clear_picture_sequence()`.
+pub const CMD14_INFO_PAYLOAD: [u8; 7] = [165, 90, 14, 0, 0, 3, 16];
+
+/// The cmd-15 (switch to GIF page) info-package payload.
+pub const CMD15_INFO_PAYLOAD: [u8; 7] = [165, 90, 15, 0, 0, 195, 65];
+
+/// The TFT page a `switch-page` command switches to. A typed enum rather
+/// than a raw `u8` command byte, so an invalid page value is unrepresentable
+/// instead of a runtime check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Home,
+    Picture,
+    Gif,
+}
+
+impl Page {
+    fn info_payload(self) -> &'static [u8; 7] {
+        match self {
+            Page::Home => &CMD11_INFO_PAYLOAD,
+            Page::Picture => &CMD13_INFO_PAYLOAD,
+            Page::Gif => &CMD15_INFO_PAYLOAD,
+        }
+    }
+}
+
 /// The `finish` report's length byte is a fixed constant, NOT derived from
 /// any real payload -- `finishScreenControlDataPacket()` is called with no
 /// arguments in the vendor's own code. A generic "length = payload.len()"
@@ -135,6 +170,26 @@ pub fn build_set_time_sequence(
     reports
 }
 
+/// The full "switch to page" sequence: `infoPackage(0x40) -> finish(0x42)`,
+/// 2 reports total. No data-packet, no repeat loop -- unlike `set-time`.
+pub fn build_page_switch_sequence(page: Page) -> Vec<[u8; 64]> {
+    vec![build_info_package(page.info_payload()), build_finish()]
+}
+
+/// The full "clear the picture" sequence: the `infoPackage(0x40) ->
+/// finish(0x42)` pair, repeated 16 times (32 reports total) -- matching the
+/// vendor's own `for (a=0; a<16; a++)` loop exactly (Phase 0/Milestone 2,
+/// `scripts/vendor-source-excerpt.js`). Every repeat is byte-identical: the
+/// command carries no per-iteration state.
+pub fn build_clear_picture_sequence() -> Vec<[u8; 64]> {
+    let mut reports = Vec::with_capacity(32);
+    for _ in 0..16 {
+        reports.push(build_info_package(&CMD14_INFO_PAYLOAD));
+        reports.push(build_finish());
+    }
+    reports
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,18 +211,23 @@ mod tests {
     }
 
     fn load_fixture_report(command_name: &str) -> [u8; 64] {
-        let json_str = include_str!("../fixtures/cap1.json");
-        let data: serde_json::Value =
-            serde_json::from_str(json_str).expect("fixtures/cap1.json must be valid JSON");
+        load_fixture_report_from(
+            include_str!("../fixtures/cap1.json"),
+            "cap1.json",
+            command_name,
+        )
+    }
+
+    fn load_fixture_report_from(json_str: &str, file_label: &str, command_name: &str) -> [u8; 64] {
+        let data: serde_json::Value = serde_json::from_str(json_str)
+            .unwrap_or_else(|_| panic!("{file_label} must be valid JSON"));
         let reports = data["reports"]
             .as_array()
-            .expect("fixtures/cap1.json must have a reports array");
+            .unwrap_or_else(|| panic!("{file_label} must have a reports array"));
         let report = reports
             .iter()
             .find(|r| r["command_name"] == command_name && r["direction"] == "out")
-            .unwrap_or_else(|| {
-                panic!("no outbound report named {command_name:?} in fixtures/cap1.json")
-            });
+            .unwrap_or_else(|| panic!("no outbound report named {command_name:?} in {file_label}"));
         let hex = report["payload_hex"]
             .as_str()
             .expect("payload_hex must be a string");
@@ -296,5 +356,112 @@ mod tests {
         let sunday_encoded = 7u8;
         let payload = date_payload(26, sunday_encoded, 8, 16);
         assert_eq!(payload[1], 7);
+    }
+
+    // --- Milestone 2: page-switch (cmd11/13/15) ---
+
+    fn page_switch_fixture(command_name: &str) -> [u8; 64] {
+        load_fixture_report_from(
+            include_str!("../fixtures/page-switch.json"),
+            "page-switch.json",
+            command_name,
+        )
+    }
+
+    #[test]
+    fn switch_page_home_matches_fixture() {
+        assert_eq!(
+            build_info_package(&CMD11_INFO_PAYLOAD),
+            page_switch_fixture("cmd11-switch-homepage-infoPackage")
+        );
+    }
+
+    #[test]
+    fn switch_page_picture_matches_fixture() {
+        assert_eq!(
+            build_info_package(&CMD13_INFO_PAYLOAD),
+            page_switch_fixture("cmd13-switch-picture-page-infoPackage")
+        );
+    }
+
+    #[test]
+    fn switch_page_gif_matches_fixture() {
+        assert_eq!(
+            build_info_package(&CMD15_INFO_PAYLOAD),
+            page_switch_fixture("cmd15-switch-gif-page-infoPackage")
+        );
+    }
+
+    #[test]
+    fn build_page_switch_sequence_is_exactly_info_then_finish_in_order() {
+        for (page, fixture_prefix) in [
+            (Page::Home, "cmd11-switch-homepage"),
+            (Page::Picture, "cmd13-switch-picture-page"),
+            (Page::Gif, "cmd15-switch-gif-page"),
+        ] {
+            let seq = build_page_switch_sequence(page);
+            assert_eq!(seq.len(), 2, "{fixture_prefix}: expected exactly 2 reports");
+            assert_eq!(
+                seq[0],
+                page_switch_fixture(&format!("{fixture_prefix}-infoPackage")),
+                "{fixture_prefix}: report 0 must be the info-package"
+            );
+            assert_eq!(
+                seq[1],
+                page_switch_fixture(&format!("{fixture_prefix}-finish")),
+                "{fixture_prefix}: report 1 must be finish"
+            );
+        }
+    }
+
+    // --- Milestone 2: clear-picture (cmd14, 16x repeat) ---
+
+    fn clear_picture_fixture(command_name: &str) -> [u8; 64] {
+        load_fixture_report_from(
+            include_str!("../fixtures/clear-picture.json"),
+            "clear-picture.json",
+            command_name,
+        )
+    }
+
+    #[test]
+    fn clear_picture_info_package_matches_fixture() {
+        assert_eq!(
+            build_info_package(&CMD14_INFO_PAYLOAD),
+            clear_picture_fixture("cmd14-clear-picture-infoPackage")
+        );
+    }
+
+    #[test]
+    fn build_clear_picture_sequence_is_32_reports_in_exact_16x_info_finish_order() {
+        let seq = build_clear_picture_sequence();
+        assert_eq!(seq.len(), 32, "expected 16x (info, finish) = 32 reports");
+
+        let expected_info = clear_picture_fixture("cmd14-clear-picture-infoPackage");
+        let expected_finish = clear_picture_fixture("cmd14-clear-picture-finish");
+
+        for repeat in 0..16 {
+            let base = repeat * 2;
+            assert_eq!(
+                seq[base], expected_info,
+                "repeat {repeat}: report at index {base} must be the info-package"
+            );
+            assert_eq!(
+                seq[base + 1],
+                expected_finish,
+                "repeat {repeat}: report at index {} must be finish",
+                base + 1
+            );
+        }
+
+        // All 16 info-package instances are byte-identical to each other --
+        // the command carries no per-iteration state.
+        for repeat in 1..16 {
+            assert_eq!(
+                seq[repeat * 2],
+                seq[0],
+                "repeat {repeat}'s info-package must be byte-identical to repeat 0's"
+            );
+        }
     }
 }

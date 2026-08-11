@@ -63,11 +63,37 @@
           { "index": 3, "name": "date", "encoding": "u8", "range": "1-31", "meaning": "day of month" }
         ]
       }
+    },
+    "cmd11_switchToHomepage": {
+      "infoPackagePayload": { "value": [165, 90, 11, 0, 0, 2, 0], "encoding": "constant", "note": "[magic, cmd=11, 0x00, len=0, innerCrc16(0x0B,0x00,0x00)] -- no data-packet follows (unlike cmd9/cmd10, N=0). Resolved Milestone 2 (2026-08-11) via live HID capture; see fixtures/page-switch.json and fixtures/raw/cap-page-switch-hidlog.json." },
+      "note": "\"Switch to the homepage\" button. Sequence: infoPackage(0x40) -> finish(0x42), no data-packet, no repeat loop."
+    },
+    "cmd13_switchToPicturePage": {
+      "infoPackagePayload": { "value": [165, 90, 13, 0, 0, 3, 224], "encoding": "constant", "note": "[magic, cmd=13, 0x00, len=0, innerCrc16(0x0D,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)." },
+      "note": "\"Switch to the picture page\" button. Same 2-report shape as cmd11."
+    },
+    "cmd15_switchToGifPage": {
+      "infoPackagePayload": { "value": [165, 90, 15, 0, 0, 195, 65], "encoding": "constant", "note": "[magic, cmd=15, 0x00, len=0, innerCrc16(0x0F,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)." },
+      "note": "\"Switch to the GIF page\" button. Same 2-report shape as cmd11/cmd13. HARDWARE CAVEAT: on the real-hardware verification run, this command was sent and cleanly ACK'd (no error) but produced NO visible change on the TFT -- the test device has no GIF ever uploaded (only a factory-default static picture), so this is consistent with an 'empty GIF slot' no-op rather than a wrong command, but was NOT visually confirmed to actually switch pages the way cmd11/cmd13 were. A future test with an actual GIF uploaded to the device would give a real visual confirmation."
+    },
+    "cmd14_clearPicture": {
+      "infoPackagePayload": { "value": [165, 90, 14, 0, 0, 3, 16], "encoding": "constant", "note": "[magic, cmd=14, 0x00, len=0, innerCrc16(0x0E,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)." },
+      "note": "\"Clear the picture\" button. Same info+finish shape as cmd11/13/15, but sent 16x in a row (32 reports total) -- matches the vendor source's literal for(a=0;a<16;a++) loop, and independently confirmed by counting the full raw HID log (not just trusting the source). Structurally UNRELATED to \"Clear GIF\" despite the vendor's internal function name for this loop implying otherwise -- see the cmd18/19 unresolved entry below and scripts/vendor-source-excerpt.js's corrective note."
     }
   },
 
   "transactionStructure": {
-    "note": "One 'Update device time' click = a for-loop of 3 iterations (confirmed in vendor source), each iteration sending: cmd9 infoPackage(0x40) -> cmd9 dataPacket(0x41) -> finish(0x42) -> cmd10 infoPackage(0x40) -> cmd10 dataPacket(0x41) -> finish(0x42). Every outbound report receives exactly 2 identical inputreport ACKs from the device (byte offset 6 flipped 0x00->0x55, otherwise byte-identical to the request) AS OBSERVED VIA WEBHID -- see rawEventCounts below for the counted evidence behind that. IMPORTANT: this is the WebHID-transport count; see linuxHidrawTransport below -- at the native hidraw layer only 1 real ACK arrives per write, not 2."
+    "note": "One 'Update device time' click = a for-loop of 3 iterations (confirmed in vendor source), each iteration sending: cmd9 infoPackage(0x40) -> cmd9 dataPacket(0x41) -> finish(0x42) -> cmd10 infoPackage(0x40) -> cmd10 dataPacket(0x41) -> finish(0x42). Every outbound report receives exactly 2 identical inputreport ACKs from the device (byte offset 6 flipped 0x00->0x55, otherwise byte-identical to the request) AS OBSERVED VIA WEBHID -- see rawEventCounts below for the counted evidence behind that. IMPORTANT: this is the WebHID-transport count; see linuxHidrawTransport below -- at the native hidraw layer only 1 real ACK arrives per write, not 2.",
+    "pageSwitch": {
+      "commands": ["cmd11_switchToHomepage", "cmd13_switchToPicturePage", "cmd15_switchToGifPage"],
+      "shape": "infoPackage(0x40) -> finish(0x42) -- 2 reports total, no data-packet, no repeat loop.",
+      "resolvedBy": "Milestone 2, live HID capture, 2026-08-11."
+    },
+    "clearPicture": {
+      "commands": ["cmd14_clearPicture"],
+      "shape": "The 2-report infoPackage(0x40) -> finish(0x42) pair, repeated 16 times (32 reports total) -- matches the vendor source's literal for(a=0;a<16;a++) loop. All 16 repeats are byte-identical (the command carries no per-iteration state), the same way set-time's 3 repeats are.",
+      "resolvedBy": "Milestone 2, live HID capture + full raw-log event count, 2026-08-11."
+    }
   },
 
   "rawEventCounts": {
@@ -112,8 +138,8 @@
       "tried": "confirmed as a stable constant across 3 live captures and the vendor source (`finishScreenControlDataPacket()` called with no arguments every time); the checksum formula using this constant is verified exactly. Only the semantic reason for the value 56 itself is unknown -- it does not block using this command."
     },
     {
-      "item": "opcodes for commands other than cmd9 (time) and cmd10 (date) -- e.g. switch-page (11/13/15), clear picture/gif (14, sent 16x)",
-      "tried": "identified by name and constant info-package bytes directly from vendor source (see scripts/vendor-source-excerpt.js), but NOT independently confirmed via live HID capture this phase -- only cmd9/cmd10 were clicked and captured. Left for Milestone 2/3 discovery."
+      "item": "\"Clear GIF\" (cmd 18 and 19) -- what the extra trailing 2 bytes mean",
+      "tried": "Live HID capture, Milestone 2 (2026-08-11): clicking \"Clear GIF\" sends TWO different inner commands, cmd18 then cmd19, each once (4 reports total: info18+finish+info19+finish -- no repeat loop, unlike \"Clear the picture\"). Both info-package payloads are 9 bytes (2 longer than every other command decoded so far): cmd18 = [165,90,18,0,1,5,16,1,0], cmd19 = [165,90,19,0,2,196,1,1,0]. Bytes 0-6 fit the established magic/cmd/0/N/crcHi/crcLo pattern (ga([18,0,1])=[5,16], ga([19,0,2])=[196,1], both confirmed). What N means is NOT established -- in set-time N lines up with \"a data-packet of N bytes follows,\" but no data-packet (0x41) is ever actually sent for cmd18 or cmd19, so calling N a \"data-packet length\" here would be an unverified claim. The 2 trailing bytes [1,0] are identical for both commands; meaning unknown (page/slot index? fixed marker? too few data points to tell). Deliberately NOT shipped as a CLI command in Milestone 2 -- shipping a command whose trailing bytes aren't understood, on the strength of \"the checksum matches,\" is exactly the half-understood shipping this project avoids. A follow-up milestone can capture this a few more times (different GIF slot, different starting state) to triangulate the trailing bytes, the way set-time's minute/second fields were triangulated from multiple captures in Phase 0."
     },
     {
       "item": "picture/GIF upload payload format",

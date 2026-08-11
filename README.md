@@ -30,11 +30,13 @@ USB ID 28e9:31c8  GDMicroelectronics YUNZII B75 PRO MAX Keyboard
 
 ## 🗺️ Status
 
-**⏰ `set-time` works!** The clock/date protocol is fully decoded (see
-`PROTOCOL.md`) and there's a native CLI for it. No `ratatui` screen yet —
-just this one command, done well. Sliders, toggles, and image/GIF upload
-aren't implemented yet; each gets its own reverse-engineering pass first,
-same process as `set-time` below. 🚧
+**⏰ `set-time`, 🖼️ `switch-page`, and 🧹 `clear-picture` work!** Their
+protocols are fully decoded (see `PROTOCOL.md`) with native CLI commands for
+each. No `ratatui` screen yet — CLI-only, done well. "Clear GIF" is
+decoded-but-deferred (2 trailing payload bytes not yet understood — see
+`PROTOCOL.md`). Sliders, toggles, and image/GIF upload aren't implemented
+yet; each gets its own reverse-engineering pass first, same process as
+`set-time` below. 🚧
 
 ---
 
@@ -46,6 +48,8 @@ sudo cp udev/99-yunzii-b75.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 # unplug and replug the keyboard, then:
 ./target/release/yunzii-b75-tui set-time
+./target/release/yunzii-b75-tui switch-page home    # or: picture, gif
+./target/release/yunzii-b75-tui clear-picture
 ```
 
 The udev rule grants access to **all** of the keyboard's `hidraw`

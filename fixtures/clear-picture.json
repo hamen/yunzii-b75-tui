@@ -1,0 +1,66 @@
+{
+  "transaction_id": "clear-picture",
+  "connection_mode": "usb-cable",
+  "interface_identity": {
+    "vendor_id_hex": "0x28E9",
+    "product_id_hex": "0x31C8",
+    "product_name": "YUNZII B75 PRO MAX Keyboard",
+    "webhid_device_index": 2,
+    "usage_page_hex": "0xFF60",
+    "usage_hex": "0x61",
+    "serial": null,
+    "note": "webhid_device_index is machine/session-specific noise, NOT a stable identifier -- re-enumerate by usage_page_hex+usage_hex at runtime. Linux-side sysfs report-descriptor bytes/hash and USB topology were NOT captured this phase -- not reachable from browser JS; deferred to the Milestone 1 implementation phase where sysfs is actually reachable."
+  },
+  "browser": "Chrome (claude-in-chrome automation)",
+  "note": "The \"Clear the picture\" button, captured live this session (2026-08-11). One representative info+finish pair is stored here; the full raw HID log (fixtures/raw/cap-clear-picture-hidlog.json) confirms the vendor JS's `for(a=0;a<16;a++)` loop is real -- exactly 16 repeats of this same info+finish pair (32 reports total), byte-identical every time (the command carries no per-iteration state). This mirrors cap3's repeat_structure pattern for set-time's 3x loop.",
+  "repeat_structure": {
+    "repeat_count": 16,
+    "note": "Confirmed by full raw HID log event count for one \"Clear the picture\" click: 16 out info-packages + 16 out finishes (32 total out), each with a matching in-ACK (64 total events) -- matches the vendor source's literal for(a=0;a<16;a++) loop exactly, and is a much larger repeat count than set-time's 3x, so was checked by counting rather than assumed from the source alone."
+  },
+  "reports": [
+    {
+      "transaction_id": "clear-picture",
+      "command_index": 0,
+      "command_name": "cmd14-clear-picture-infoPackage",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 07 67 01 00 a5 5a 0e 00 00 03 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "clear-picture",
+      "command_index": 0,
+      "command_name": "cmd14-clear-picture-infoPackage-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 07 67 01 55 a5 5a 0e 00 00 03 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "clear-picture",
+      "command_index": 0,
+      "command_name": "cmd14-clear-picture-finish",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "clear-picture",
+      "command_index": 0,
+      "command_name": "cmd14-clear-picture-finish-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    }
+  ]
+}

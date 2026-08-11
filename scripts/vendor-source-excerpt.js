@@ -63,9 +63,34 @@ const switchToGifPage = async () => {
   await finishScreenControlDataPacket();
 };
 
+// CORRECTIVE NOTE (Milestone 2, live capture, 2026-08-11): despite this
+// function's name (from the original fetched/deminified excerpt, kept below
+// verbatim), the 16x loop applies ONLY to "Clear the picture" (cmd14).
+// "Clear GIF" is a DIFFERENT, non-looped sequence (cmd18 then cmd19, each
+// sent once) -- see fields.json's unresolved[] entry for cmd18/19 and
+// commands.cmd14_clearPicture. This function was never renamed in the
+// vendor's own minified bundle either; the name is simply misleading, not
+// evidence the two buttons share a handler.
 const clearPictureOrGif_loop16x = async () => {
   // for (a=0; a<16; a++) { crc = ga([14,0,0]); pkg = [165,90,14,0,0,crc0,crc1]; ... }
   // (truncated in the fetched excerpt -- opcode 14, sent 16 times)
+  // Confirmed by live capture: this is "Clear the picture" ONLY.
+};
+
+// "Clear GIF" -- confirmed by live capture (Milestone 2, 2026-08-11) to be
+// unrelated to clearPictureOrGif_loop16x above: two different inner
+// commands, cmd18 then cmd19, each sent once (no loop). Reconstructed here
+// from captured bytes, not fetched from the bundle directly.
+const clearGif_notLooped = async () => {
+  const crc18 = ga([18, 0, 1]);
+  const pkg18 = [165, 90, 18, 0, 1, crc18[0], crc18[1], 1, 0]; // trailing [1,0] meaning unresolved
+  await sendScreenControlInformationPackage(pkg18);
+  await finishScreenControlDataPacket();
+
+  const crc19 = ga([19, 0, 2]);
+  const pkg19 = [165, 90, 19, 0, 2, crc19[0], crc19[1], 1, 0]; // trailing [1,0] meaning unresolved
+  await sendScreenControlInformationPackage(pkg19);
+  await finishScreenControlDataPacket();
 };
 
 // THE ACTUAL "Update device time" HANDLER (dayjs instance called `Uf()`):
