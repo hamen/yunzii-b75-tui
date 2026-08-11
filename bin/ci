@@ -12,8 +12,8 @@
 #     fixtures/raw/cap1-hidlog.json (the minimally processed capture
 #     evidence) byte for byte -- the one check that isn't just the model
 #     checking itself
-# Full cargo fmt/test/clippy wiring lands with the first Rust code, in the
-# follow-up implementation PR.
+# Plus, since Milestone 1 (native set-time): cargo fmt/test/clippy for the
+# Rust binary. Requires a Rust toolchain (https://rustup.rs) to be installed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,3 +27,15 @@ node scripts/check-coverage.js
 echo
 echo "==> check-raw-consistency.js"
 node scripts/check-raw-consistency.js
+
+echo
+echo "==> cargo fmt --check"
+cargo fmt --check
+
+echo
+echo "==> cargo test"
+cargo test
+
+echo
+echo "==> cargo clippy --all-targets -- -D warnings"
+cargo clippy --all-targets -- -D warnings

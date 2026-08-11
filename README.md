@@ -17,10 +17,26 @@ USB ID 28e9:31c8  GDMicroelectronics YUNZII B75 PRO MAX Keyboard
 
 ## Status
 
-**Protocol discovery in progress — no working tool yet.** This repo currently
-documents the reverse-engineered HID protocol (see `PROTOCOL.md`) rather than
-shipping a binary. The native TUI ships in a follow-up phase once enough of
-the protocol is decoded to implement it.
+**Milestone 1: `set-time` works.** The clock/date protocol is fully decoded
+(see `PROTOCOL.md`) and there's a native CLI for it — no `ratatui` screen
+yet, just this one command. Sliders, toggles, and image/GIF upload are not
+implemented yet (each needs its own protocol discovery phase first, same
+process as `set-time`).
+
+## Quick start
+
+```bash
+cargo build --release
+sudo cp udev/99-yunzii-b75.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
+# unplug and replug the keyboard, then:
+./target/release/yunzii-b75-tui set-time
+```
+
+Requires: [Rust](https://rustup.rs) (for `bin/ci`'s `cargo` steps too), the
+keyboard connected via USB-C (2.4G dongle / Bluetooth untested), and the
+vendor's browser tab (if any) closed — WebHID and this tool can't hold the
+device open at the same time.
 
 ## Hardware
 
