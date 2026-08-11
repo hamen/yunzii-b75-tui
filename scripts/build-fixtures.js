@@ -266,3 +266,130 @@ for (const [name, obj] of [['page-switch', pageSwitch], ['clear-picture', clearP
   fs.writeFileSync(path.join(__dirname, '..', 'fixtures', `${name}.json`), JSON.stringify(obj, null, 2) + '\n');
   console.log(`wrote fixtures/${name}.json`);
 }
+
+// --- Milestone 3: picture upload (cmd16 start, cmd12 declare-size, bulk, finish) ---
+//
+// This fixture is built DIFFERENTLY from every one above, on purpose.
+//
+// The ones above hardcode short observed byte arrays. That works when a
+// command is a handful of constant reports, but picture upload is 552
+// reports and 30720 payload bytes: hardcoding them would mean pasting the
+// capture in, and then check-raw-consistency.js would only be comparing a
+// copy of the capture against the capture.
+//
+// So here the fixture is regenerated from the SOURCE IMAGE
+// (fixtures/test-quadrants.png) through the documented protocol model:
+// decode PNG -> RGB565 -> 56-byte chunks -> reports. The real hardware
+// capture lives separately in fixtures/raw/cap-picture-upload-hidlog.json,
+// written straight out of the vendor tool's own WebHID traffic and never
+// read by this script. check-raw-consistency.js compares the two, which
+// makes it a genuine test of the model against the hardware: any error in
+// the resize rule, channel order, byte order, chunk size, offset encoding,
+// length byte, or checksum shows up as a byte mismatch.
+
+const { decodePng } = require('./png-decode');
+
+const PANEL_W = 160;
+const PANEL_H = 96;
+const BULK_CHUNK = 56; // reqLen(63) - 7-byte header, per the vendor's own `i = n - 7`
+
+// The unified outer checksum. Bytes 1-2 (the bulk offset) are part of the
+// sum, and the result is 16-bit little-endian at bytes 4-5 for EVERY opcode
+// -- see PROTOCOL.md's "checksum correction" section. Byte 5 was previously
+// documented as a reserved zero, which held only because every command
+// decoded before Milestone 3 had a total sum below 256.
+function outerChecksum(opcode, b1, b2, lengthByte, payload) {
+  const sum = opcode + b1 + b2 + lengthByte + payload.reduce((a, b) => a + b, 0);
+  return [sum & 0xff, (sum >> 8) & 0xff];
+}
+
+function buildReport(opcode, b1, b2, lengthByte, payload) {
+  const [lo, hi] = outerChecksum(opcode, b1, b2, lengthByte, payload);
+  return padTo64([opcode, b1, b2, lengthByte, lo, hi, 0x00, ...payload]);
+}
+
+// Fully transparent pixels are flattened to black, matching the vendor's own
+// `if (data[i+3] === 0) { data[i] = data[i+1] = data[i+2] = 0 }` pass.
+function rgb565Encode(rgba) {
+  const out = [];
+  for (let i = 0; i < rgba.length; i += 4) {
+    let r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
+    if (rgba[i + 3] === 0) { r = 0; g = 0; b = 0; }
+    const v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+    out.push((v >> 8) & 0xff, v & 0xff); // big-endian per pixel
+  }
+  return out;
+}
+
+function buildPictureUploadFixture() {
+  const imagePath = path.join(__dirname, '..', 'fixtures', 'test-quadrants.png');
+  const { width, height, rgba } = decodePng(imagePath);
+  if (width !== PANEL_W || height !== PANEL_H) {
+    throw new Error(`test-quadrants.png must be ${PANEL_W}x${PANEL_H} (it is the panel size, so no resize step is involved), got ${width}x${height}`);
+  }
+
+  const pixels = rgb565Encode(rgba);
+  if (pixels.length !== PANEL_W * PANEL_H * 2) {
+    throw new Error(`expected ${PANEL_W * PANEL_H * 2} encoded bytes, got ${pixels.length}`);
+  }
+
+  const reports = [];
+  function push(commandIndex, commandName, opcode, bytes, extra) {
+    const entry = {
+      transaction_id: 'picture-upload',
+      command_index: commandIndex,
+      command_name: commandName,
+      fragment_index: 0,
+      opcode_hex: '0x' + opcode.toString(16).padStart(2, '0'),
+      direction: 'out',
+      hid_method: 'output-report',
+      report_id: 0,
+      payload_hex: toHexBytes(bytes),
+    };
+    if (extra) Object.assign(entry, extra);
+    reports.push(entry);
+  }
+
+  // 1. start: info-package (0x40), inner cmd 16. Eight payload bytes, not
+  //    the seven every earlier command used.
+  push(0, 'cmd16-picture-start-infoPackage', 0x40, buildReport(0x40, 0, 0, 8, [165, 90, 16, 0, 1, 197, 177, 1]));
+
+  // 2. declare size: data-packet (0x41), inner cmd 12. `120,0` is 30720 as
+  //    [hi,lo]; `195,147` is the vendor's inner CRC ga([12,120,0]).
+  push(1, 'cmd12-picture-declareSize-dataPacket', 0x41, buildReport(0x41, 0, 0, 7, [165, 90, 12, 120, 0, 195, 147]));
+
+  // 3. bulk pixel data. The length byte is the real remaining-byte count,
+  //    so the final chunk declares 0x20 (32), NOT a zero-padded 0x38.
+  for (let offset = 0; offset < pixels.length; offset += BULK_CHUNK) {
+    const chunk = pixels.slice(offset, offset + BULK_CHUNK);
+    const bytes = buildReport(0x41, offset & 0xff, (offset >> 8) & 0xff, chunk.length, chunk);
+    push(2, 'picture-bulk-' + String(offset / BULK_CHUNK).padStart(3, '0'), 0x41, bytes, {
+      offset,
+      data_length: chunk.length,
+    });
+  }
+
+  // 4. finish (0x42), the same constant report every other command ends with.
+  push(3, 'picture-finish', 0x42, FINISH_OUT);
+
+  return {
+    transaction_id: 'picture-upload',
+    connection_mode: 'usb-cable',
+    interface_identity: cap1.interface_identity,
+    browser: 'Chrome (claude-in-chrome automation)',
+    source_image: 'fixtures/test-quadrants.png',
+    note: 'The "Save to the device" button on the Picture Settings tab, for a 160x96 four-quadrant + gradient test image, captured live 2026-08-11. 552 out reports: 1 start + 1 declare-size + 549 bulk + 1 finish. Unlike the other fixtures in this directory, these bytes are REGENERATED from fixtures/test-quadrants.png through the protocol model rather than hardcoded from the capture -- the capture itself is in fixtures/raw/cap-picture-upload-hidlog.json and scripts/check-raw-consistency.js compares the two, so that comparison actually tests the model against real hardware traffic. It passes with 0 mismatches across all 552 reports / 30720 pixel bytes.',
+    structure: {
+      total_reports: 552,
+      bulk_reports: 549,
+      bulk_chunk_bytes: BULK_CHUNK,
+      pixel_bytes: PANEL_W * PANEL_H * 2,
+      note: 'ACKs are not stored: they were not recorded in this capture, and inventing them by flipping byte 6 (as the earlier fixtures do) would add derived data to a file whose value is that every byte in it was observed.',
+    },
+    reports,
+  };
+}
+
+const pictureUpload = buildPictureUploadFixture();
+fs.writeFileSync(path.join(__dirname, '..', 'fixtures', 'picture-upload.json'), JSON.stringify(pictureUpload, null, 2) + '\n');
+console.log(`wrote fixtures/picture-upload.json (${pictureUpload.reports.length} reports)`);

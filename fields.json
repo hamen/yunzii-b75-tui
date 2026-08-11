@@ -1,108 +1,428 @@
 {
   "$schema_note": "Maps every byte offset (0-63) of each report shape to a named field. Checked by bin/ci against fixtures/*.json for full coverage. Reassembly across multiple physical reports is NOT modeled here because discovery found there isn't any: opcodes 0x40/0x41/0x42 are independently complete report types, not fragments of one larger logical message (see PROTOCOL.md).",
-
   "reportShapes": {
     "0x40": {
       "opcodeName": "sendScreenControlInformationPackage",
       "totalLength": 64,
       "fields": [
-        { "offset": [0, 0], "name": "opcode", "encoding": "constant", "value": "0x40" },
-        { "offset": [1, 2], "name": "reserved", "encoding": "constant", "value": "0x00 0x00" },
-        { "offset": [3, 3], "name": "length", "encoding": "u8", "meaning": "length of the info-package array that follows (magic+cmd+subfields+inner-crc)" },
-        { "offset": [4, 5], "name": "checksum16le", "encoding": "u16-le", "formula": "sum = (opcode + length + sum(payload_bytes)) & 0xFFFF, stored as [sum&0xFF, (sum>>8)&0xFF]" },
-        { "offset": [6, 6], "name": "status", "encoding": "u8", "meaning": "0x00 on outbound request, 0x55 on device ACK (getDongleAndKeyboardStatus opcode reused as an ack marker)" },
-        { "offset": [7, 63], "name": "payload_then_padding", "encoding": "bytes", "meaning": "the info-package array (length bytes, command-specific, see commands below), then 0x00 padding to offset 63" }
+        {
+          "offset": [
+            0,
+            0
+          ],
+          "name": "opcode",
+          "encoding": "constant",
+          "value": "0x40"
+        },
+        {
+          "offset": [
+            1,
+            2
+          ],
+          "name": "reserved",
+          "encoding": "constant",
+          "value": "0x00 0x00"
+        },
+        {
+          "offset": [
+            3,
+            3
+          ],
+          "name": "length",
+          "encoding": "u8",
+          "meaning": "length of the info-package array that follows (magic+cmd+subfields+inner-crc)"
+        },
+        {
+          "offset": [
+            4,
+            5
+          ],
+          "name": "checksum16le",
+          "encoding": "u16-le",
+          "formula": "sum = (opcode + byte1 + byte2 + length + 0 + 0 + 0 + sum(payload_bytes)) & 0xFFFF, stored as [sum&0xFF, (sum>>8)&0xFF]. Bytes 1-2 are part of the sum: they are zero for every command except picture-upload bulk packets, where they carry the data offset. Bytes 4-6 count as zero while summing (the vendor builds the array with 0x00 placeholders there, computes the sum, then writes the two checksum bytes back into 4 and 5)."
+        },
+        {
+          "offset": [
+            6,
+            6
+          ],
+          "name": "status",
+          "encoding": "u8",
+          "meaning": "0x00 on outbound request, 0x55 on device ACK (getDongleAndKeyboardStatus opcode reused as an ack marker)"
+        },
+        {
+          "offset": [
+            7,
+            63
+          ],
+          "name": "payload_then_padding",
+          "encoding": "bytes",
+          "meaning": "the info-package array (length bytes, command-specific, see commands below), then 0x00 padding to offset 63"
+        }
       ]
     },
     "0x41": {
       "opcodeName": "sendScreenControlDataPacket",
       "totalLength": 64,
       "fields": [
-        { "offset": [0, 0], "name": "opcode", "encoding": "constant", "value": "0x41" },
-        { "offset": [1, 2], "name": "reserved", "encoding": "constant", "value": "0x00 0x00" },
-        { "offset": [3, 3], "name": "length", "encoding": "u8", "meaning": "length of the data payload that follows" },
-        { "offset": [4, 4], "name": "checksum8", "encoding": "u8", "formula": "(opcode + length + sum(payload_bytes)) & 0xFF" },
-        { "offset": [5, 5], "name": "reserved", "encoding": "constant", "value": "0x00" },
-        { "offset": [6, 6], "name": "status", "encoding": "u8", "meaning": "0x00 outbound, 0x55 device ACK" },
-        { "offset": [7, 63], "name": "payload_then_padding", "encoding": "bytes", "meaning": "the data payload (length bytes, command-specific, see commands below), then 0x00 padding" }
+        {
+          "offset": [
+            0,
+            0
+          ],
+          "name": "opcode",
+          "encoding": "constant",
+          "value": "0x41"
+        },
+        {
+          "offset": [
+            1,
+            2
+          ],
+          "name": "dataOffsetLE16",
+          "encoding": "u16-le",
+          "meaning": "Byte offset of this packet's payload within the whole data stream being uploaded, little-endian. Zero for every short command (set-time's data packets, picture-upload's declare-size), which is why Phase 0 recorded these two bytes as 'reserved'. Milestone 3's bulk pixel packets walk it 0, 56, 112, ... 30688."
+        },
+        {
+          "offset": [
+            3,
+            3
+          ],
+          "name": "length",
+          "encoding": "u8",
+          "meaning": "length of the data payload that follows"
+        },
+        {
+          "offset": [
+            4,
+            5
+          ],
+          "name": "checksum16le",
+          "encoding": "u16-le",
+          "formula": "sum = (opcode + byte1 + byte2 + length + 0 + 0 + 0 + sum(payload_bytes)) & 0xFFFF, stored as [sum&0xFF, (sum>>8)&0xFF]. Bytes 1-2 are part of the sum: they are zero for every command except picture-upload bulk packets, where they carry the data offset. Bytes 4-6 count as zero while summing (the vendor builds the array with 0x00 placeholders there, computes the sum, then writes the two checksum bytes back into 4 and 5).",
+          "correction": "Milestone 3: this was previously documented as an 8-bit checksum at byte 4 with a reserved zero at byte 5. Byte 4 was always right -- it is the low byte either way -- but byte 5 is the HIGH byte, not a reserved zero. Every command decoded before Milestone 3 had a total sum below 256, so the old model produced identical bytes and looked correct. In fixtures/picture-upload.json, byte 5 is non-zero in 551 of 552 reports."
+        },
+        {
+          "offset": [
+            6,
+            6
+          ],
+          "name": "status",
+          "encoding": "u8",
+          "meaning": "0x00 outbound, 0x55 device ACK"
+        },
+        {
+          "offset": [
+            7,
+            63
+          ],
+          "name": "payload_then_padding",
+          "encoding": "bytes",
+          "meaning": "the data payload (length bytes, command-specific, see commands below), then 0x00 padding"
+        }
       ]
     },
     "0x42": {
       "opcodeName": "finishScreenControlDataPacket",
       "totalLength": 64,
       "fields": [
-        { "offset": [0, 0], "name": "opcode", "encoding": "constant", "value": "0x42" },
-        { "offset": [1, 2], "name": "reserved", "encoding": "constant", "value": "0x00 0x00" },
-        { "offset": [3, 3], "name": "length", "encoding": "constant", "value": "0x38", "note": "always 56 for this opcode in every capture; the site calls it with no explicit payload -- 56 is a baked-in constant, not derived from an actual 56-byte payload. Numeric meaning of 56 itself is unresolved (see unresolved[])." },
-        { "offset": [4, 4], "name": "checksum8", "encoding": "u8", "formula": "(opcode + length + 0) & 0xFF  -- no real payload bytes contribute" },
-        { "offset": [5, 5], "name": "reserved", "encoding": "constant", "value": "0x00" },
-        { "offset": [6, 6], "name": "status", "encoding": "u8", "meaning": "0x00 outbound, 0x55 device ACK" },
-        { "offset": [7, 63], "name": "padding", "encoding": "bytes", "meaning": "always all-zero in every observed capture" }
+        {
+          "offset": [
+            0,
+            0
+          ],
+          "name": "opcode",
+          "encoding": "constant",
+          "value": "0x42"
+        },
+        {
+          "offset": [
+            1,
+            2
+          ],
+          "name": "reserved",
+          "encoding": "constant",
+          "value": "0x00 0x00"
+        },
+        {
+          "offset": [
+            3,
+            3
+          ],
+          "name": "length",
+          "encoding": "constant",
+          "value": "0x38",
+          "note": "always 56 for this opcode in every capture; the site calls it with no explicit payload -- 56 is a baked-in constant, not derived from an actual 56-byte payload. Numeric meaning of 56 itself is unresolved (see unresolved[])."
+        },
+        {
+          "offset": [
+            4,
+            5
+          ],
+          "name": "checksum16le",
+          "encoding": "u16-le",
+          "formula": "sum = (opcode + byte1 + byte2 + length + 0 + 0 + 0 + sum(payload_bytes)) & 0xFFFF, stored as [sum&0xFF, (sum>>8)&0xFF]. Bytes 1-2 are part of the sum: they are zero for every command except picture-upload bulk packets, where they carry the data offset. Bytes 4-6 count as zero while summing (the vendor builds the array with 0x00 placeholders there, computes the sum, then writes the two checksum bytes back into 4 and 5).",
+          "note": "Always [0x7a, 0x00] for this constant report -- its sum (0x42 + 0x38 = 0x7a) is below 256, so the high byte is zero. See the 0x41 correction note."
+        },
+        {
+          "offset": [
+            6,
+            6
+          ],
+          "name": "status",
+          "encoding": "u8",
+          "meaning": "0x00 outbound, 0x55 device ACK"
+        },
+        {
+          "offset": [
+            7,
+            63
+          ],
+          "name": "padding",
+          "encoding": "bytes",
+          "meaning": "always all-zero in every observed capture"
+        }
       ]
     }
   },
-
   "commands": {
     "cmd9_setClock": {
-      "infoPackagePayload": { "value": [165, 90, 9, 0, 3, 195, 225], "encoding": "constant", "note": "[magic 0xA5 0x5A, cmd=9, 0x00, len=3, innerCrc16(0x09,0x00,0x03)] -- innerCrc16 uses a SEPARATE CRC-16/ARC function (poly 0xA001 reflected, init 0xFFFF), precomputed by the vendor's bundler since inputs never change. Do not confuse with the outer report checksum above." },
+      "infoPackagePayload": {
+        "value": [
+          165,
+          90,
+          9,
+          0,
+          3,
+          195,
+          225
+        ],
+        "encoding": "constant",
+        "note": "[magic 0xA5 0x5A, cmd=9, 0x00, len=3, innerCrc16(0x09,0x00,0x03)] -- innerCrc16 uses a SEPARATE CRC-16/ARC function (poly 0xA001 reflected, init 0xFFFF), precomputed by the vendor's bundler since inputs never change. Do not confuse with the outer report checksum above."
+      },
       "dataPacketPayload": {
         "fields": [
-          { "index": 0, "name": "hour", "encoding": "u8", "range": "0-23" },
-          { "index": 1, "name": "minute", "encoding": "u8", "range": "0-59" },
-          { "index": 2, "name": "second", "encoding": "u8", "range": "0-59" }
+          {
+            "index": 0,
+            "name": "hour",
+            "encoding": "u8",
+            "range": "0-23"
+          },
+          {
+            "index": 1,
+            "name": "minute",
+            "encoding": "u8",
+            "range": "0-59"
+          },
+          {
+            "index": 2,
+            "name": "second",
+            "encoding": "u8",
+            "range": "0-59"
+          }
         ]
       }
     },
     "cmd10_setDate": {
-      "infoPackagePayload": { "value": [165, 90, 10, 0, 4, 1, 80], "encoding": "constant", "note": "[magic, cmd=10, 0x00, len=4, innerCrc16(0x0A,0x00,0x04)]" },
+      "infoPackagePayload": {
+        "value": [
+          165,
+          90,
+          10,
+          0,
+          4,
+          1,
+          80
+        ],
+        "encoding": "constant",
+        "note": "[magic, cmd=10, 0x00, len=4, innerCrc16(0x0A,0x00,0x04)]"
+      },
       "dataPacketPayload": {
         "fields": [
-          { "index": 0, "name": "year2digit", "encoding": "u8", "range": "0-99", "meaning": "2-digit year, e.g. 26 for 2026" },
-          { "index": 1, "name": "weekday", "encoding": "u8", "range": "1-7", "meaning": "1=Monday .. 7=Sunday (dayjs Sunday=0 remapped to 7)" },
-          { "index": 2, "name": "month", "encoding": "u8", "range": "1-12" },
-          { "index": 3, "name": "date", "encoding": "u8", "range": "1-31", "meaning": "day of month" }
+          {
+            "index": 0,
+            "name": "year2digit",
+            "encoding": "u8",
+            "range": "0-99",
+            "meaning": "2-digit year, e.g. 26 for 2026"
+          },
+          {
+            "index": 1,
+            "name": "weekday",
+            "encoding": "u8",
+            "range": "1-7",
+            "meaning": "1=Monday .. 7=Sunday (dayjs Sunday=0 remapped to 7)"
+          },
+          {
+            "index": 2,
+            "name": "month",
+            "encoding": "u8",
+            "range": "1-12"
+          },
+          {
+            "index": 3,
+            "name": "date",
+            "encoding": "u8",
+            "range": "1-31",
+            "meaning": "day of month"
+          }
         ]
       }
     },
     "cmd11_switchToHomepage": {
-      "infoPackagePayload": { "value": [165, 90, 11, 0, 0, 2, 0], "encoding": "constant", "note": "[magic, cmd=11, 0x00, len=0, innerCrc16(0x0B,0x00,0x00)] -- no data-packet follows (unlike cmd9/cmd10, N=0). Resolved Milestone 2 (2026-08-11) via live HID capture; see fixtures/page-switch.json and fixtures/raw/cap-page-switch-hidlog.json." },
+      "infoPackagePayload": {
+        "value": [
+          165,
+          90,
+          11,
+          0,
+          0,
+          2,
+          0
+        ],
+        "encoding": "constant",
+        "note": "[magic, cmd=11, 0x00, len=0, innerCrc16(0x0B,0x00,0x00)] -- no data-packet follows (unlike cmd9/cmd10, N=0). Resolved Milestone 2 (2026-08-11) via live HID capture; see fixtures/page-switch.json and fixtures/raw/cap-page-switch-hidlog.json."
+      },
       "note": "\"Switch to the homepage\" button. Sequence: infoPackage(0x40) -> finish(0x42), no data-packet, no repeat loop."
     },
     "cmd13_switchToPicturePage": {
-      "infoPackagePayload": { "value": [165, 90, 13, 0, 0, 3, 224], "encoding": "constant", "note": "[magic, cmd=13, 0x00, len=0, innerCrc16(0x0D,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)." },
+      "infoPackagePayload": {
+        "value": [
+          165,
+          90,
+          13,
+          0,
+          0,
+          3,
+          224
+        ],
+        "encoding": "constant",
+        "note": "[magic, cmd=13, 0x00, len=0, innerCrc16(0x0D,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)."
+      },
       "note": "\"Switch to the picture page\" button. Same 2-report shape as cmd11."
     },
     "cmd15_switchToGifPage": {
-      "infoPackagePayload": { "value": [165, 90, 15, 0, 0, 195, 65], "encoding": "constant", "note": "[magic, cmd=15, 0x00, len=0, innerCrc16(0x0F,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)." },
+      "infoPackagePayload": {
+        "value": [
+          165,
+          90,
+          15,
+          0,
+          0,
+          195,
+          65
+        ],
+        "encoding": "constant",
+        "note": "[magic, cmd=15, 0x00, len=0, innerCrc16(0x0F,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)."
+      },
       "note": "\"Switch to the GIF page\" button. Same 2-report shape as cmd11/cmd13. HARDWARE CAVEAT (round 2, with a real GIF now on the device): this command's bytes are confirmed byte-for-byte identical to what the vendor's own tool sends (captured directly), but NEITHER this repo's CLI NOR the vendor's own tool visually switches the TFT to the GIF page. See the entry for this in unresolved -- the command itself is correct, something else (unknown) is needed to make the GIF page actually display. DECISION (round 3): NOT shipped as a CLI command (main.rs's switch-page only accepts home/picture) -- the wire bytes are correct and this constant/documentation stay resolved, but sending a command that doesn't do what it says is not something this repo ships."
     },
     "cmd14_clearPicture": {
-      "infoPackagePayload": { "value": [165, 90, 14, 0, 0, 3, 16], "encoding": "constant", "note": "[magic, cmd=14, 0x00, len=0, innerCrc16(0x0E,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)." },
+      "infoPackagePayload": {
+        "value": [
+          165,
+          90,
+          14,
+          0,
+          0,
+          3,
+          16
+        ],
+        "encoding": "constant",
+        "note": "[magic, cmd=14, 0x00, len=0, innerCrc16(0x0E,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)."
+      },
       "note": "\"Clear the picture\" button. Same info+finish shape as cmd11/13/15, but sent 16x in a row (32 reports total) -- matches the vendor source's literal for(a=0;a<16;a++) loop, and independently confirmed by counting the full raw HID log (not just trusting the source). Structurally UNRELATED to \"Clear GIF\" despite the vendor's internal function name for this loop implying otherwise -- see the cmd18/19 unresolved entry below and scripts/vendor-source-excerpt.js's corrective note."
+    },
+    "cmd16_pictureUploadStart": {
+      "infoPackagePayload": {
+        "value": [
+          165,
+          90,
+          16,
+          0,
+          1,
+          197,
+          177,
+          1
+        ],
+        "encoding": "constant",
+        "note": "EIGHT bytes, not the seven every command decoded before it: [magic, cmd=16, 0x00, len=1, innerCrc16(0x10,0x00,0x01), 0x01]. The trailing 0x01 is the one-byte body the len=1 field describes. Resolved Milestone 3 (2026-08-11). Constant across every picture upload captured, because the panel size is fixed."
+      },
+      "note": "Opens a picture upload. In the vendor's GIF path the equivalent per-frame command carries a mode byte and a frame index in place of that trailing 0x01, which is why this payload is documented as a picture-upload constant rather than as the general shape of cmd16."
+    },
+    "cmd12_pictureDeclareSize": {
+      "dataPacketPayload": {
+        "value": [
+          165,
+          90,
+          12,
+          120,
+          0,
+          195,
+          147
+        ],
+        "encoding": "constant",
+        "note": "[magic, cmd=12, 0x78, 0x00, innerCrc16(0x0C,0x78,0x00)]. `120,0` is 30720 -- the total pixel-stream length -- encoded [hi,lo], the opposite order from the LE offset in bytes 1-2 of the same report. Constant only because the panel is a fixed 160x96; a device with a different panel would send a different value here."
+      },
+      "note": "Declares how many bytes of pixel data will follow. Sent as a data packet (0x41), not an info package (0x40) -- the only command so far whose leading report is a 0x41."
     }
   },
-
   "transactionStructure": {
     "note": "One 'Update device time' click = a for-loop of 3 iterations (confirmed in vendor source), each iteration sending: cmd9 infoPackage(0x40) -> cmd9 dataPacket(0x41) -> finish(0x42) -> cmd10 infoPackage(0x40) -> cmd10 dataPacket(0x41) -> finish(0x42). Every outbound report receives exactly 2 identical inputreport ACKs from the device (byte offset 6 flipped 0x00->0x55, otherwise byte-identical to the request) AS OBSERVED VIA WEBHID -- see rawEventCounts below for the counted evidence behind that. IMPORTANT: this is the WebHID-transport count; see linuxHidrawTransport below -- at the native hidraw layer only 1 real ACK arrives per write, not 2.",
     "pageSwitch": {
-      "commands": ["cmd11_switchToHomepage", "cmd13_switchToPicturePage", "cmd15_switchToGifPage"],
+      "commands": [
+        "cmd11_switchToHomepage",
+        "cmd13_switchToPicturePage",
+        "cmd15_switchToGifPage"
+      ],
       "shape": "infoPackage(0x40) -> finish(0x42) -- 2 reports total, no data-packet, no repeat loop.",
       "resolvedBy": "Milestone 2, live HID capture, 2026-08-11."
     },
     "clearPicture": {
-      "commands": ["cmd14_clearPicture"],
+      "commands": [
+        "cmd14_clearPicture"
+      ],
       "shape": "The 2-report infoPackage(0x40) -> finish(0x42) pair, repeated 16 times (32 reports total) -- matches the vendor source's literal for(a=0;a<16;a++) loop. All 16 repeats are byte-identical (the command carries no per-iteration state), the same way set-time's 3 repeats are.",
       "resolvedBy": "Milestone 2, live HID capture + full raw-log event count, 2026-08-11."
+    },
+    "pictureUpload": {
+      "commands": [
+        "cmd16_pictureUploadStart",
+        "cmd12_pictureDeclareSize"
+      ],
+      "shape": "552 reports: infoPackage(0x40 cmd16) -> [host sleeps 300 ms] -> dataPacket(0x41 cmd12, declare size) -> 549x dataPacket(0x41, 56 pixel bytes each) -> finish(0x42). The 300 ms pause sits between the start report and declare-size, NOT before the bulk data: that is the order in the vendor's own source (`await r(re); await sleep(300); await o(Ue); ...`) and it is where the gap appears in the captured timestamps.",
+      "bulkPackets": {
+        "count": 549,
+        "chunkBytes": 56,
+        "note": "56 = the vendor's `reqLen - 7`, i.e. the report size minus the 7-byte header. Bytes 1-2 carry the little-endian offset (0, 56, ... 30688). The length byte is the REAL remaining byte count, so the last packet declares 0x20 (32), not a zero-padded 0x38: 548*56 + 32 = 30720 exactly. Getting that wrong also corrupts that packet's checksum, since the length byte is summed."
+      },
+      "pixelFormat": {
+        "panel": "160x96",
+        "encoding": "RGB565, big-endian per pixel: v = (R>>3)<<11 | (G>>2)<<5 | (B>>3), emitted as [v>>8, v&0xFF]. Row-major, top row first, left to right. Fully transparent pixels are flattened to black before encoding. Total 30720 bytes, always.",
+        "resize": "The vendor draws the source through a canvas with imageSmoothingEnabled = false, i.e. nearest-neighbour. An interpolating resize produces different bytes for the same input.",
+        "verifiedBy": "fixtures/picture-upload.json is regenerated from fixtures/test-quadrants.png through these rules and compared against the real capture in fixtures/raw/cap-picture-upload-hidlog.json by scripts/check-raw-consistency.js: 0 mismatches across all 552 reports / 30720 pixel bytes. A four-quadrant + gradient image was used precisely because solid colours cannot distinguish row order, channel order, or per-pixel byte order."
+      },
+      "resolvedBy": "Milestone 3, live HID capture of the vendor tool + source read, 2026-08-11."
     }
   },
-
   "rawEventCounts": {
     "source": "cap3 session, full window.__hidLog for one click (54 raw HID events), counted directly (not sampled) before deduplication into fixtures/cap3.json's representative-per-type entries",
-    "outCounts": { "cmd9-infoPackage(0x40)": 3, "cmd9-dataPacket(0x41)": 3, "finish(0x42)_total_both_groups": 6, "cmd10-infoPackage(0x40)": 3, "cmd10-dataPacket(0x41)": 3 },
-    "inCounts": { "cmd9-infoPackage(0x40)_ACK": 6, "cmd9-dataPacket(0x41)_ACK": 6, "finish(0x42)_ACK_total_both_groups": 12, "cmd10-infoPackage(0x40)_ACK": 6, "cmd10-dataPacket(0x41)_ACK": 6 },
+    "outCounts": {
+      "cmd9-infoPackage(0x40)": 3,
+      "cmd9-dataPacket(0x41)": 3,
+      "finish(0x42)_total_both_groups": 6,
+      "cmd10-infoPackage(0x40)": 3,
+      "cmd10-dataPacket(0x41)": 3
+    },
+    "inCounts": {
+      "cmd9-infoPackage(0x40)_ACK": 6,
+      "cmd9-dataPacket(0x41)_ACK": 6,
+      "finish(0x42)_ACK_total_both_groups": 12,
+      "cmd10-infoPackage(0x40)_ACK": 6,
+      "cmd10-dataPacket(0x41)_ACK": 6
+    },
     "arithmeticCheck": "sum(outCounts) = 3+3+6+3+3 = 18; sum(inCounts) = 6+6+12+6+6 = 36; 18+36 = 54, matching the raw log's total event count exactly -- every out report received exactly 2 in ACKs (inCount = 2 * outCount for every report type)."
   },
-
   "linuxInterfaceIdentity": {
     "note": "Obtained directly via Linux shell access on the capture machine (not from browser JS -- the earlier draft of this phase incorrectly deferred this as unreachable; it only required a local shell, which was available all along).",
     "configChannel": {
@@ -117,13 +437,36 @@
       "aclConfirmed": "getfacl shows `user:ivan:rw-` on /dev/hidraw5 -- the udev rule (VID 28E9) grants uaccess correctly on this interface, confirmed for all 4 of the device's hidraw nodes on this machine, not just some (an earlier plan-review round had flagged inconsistent ACL as a risk based on partial evidence; re-checked and it's uniform here)."
     },
     "allFourInterfaces": [
-      { "hidrawNode": "hidraw4", "usbInterfaceNumber": 0, "usagePage": "0x0001", "usage": "0x0006", "role": "standard keyboard (Generic Desktop / Keyboard)" },
-      { "hidrawNode": "hidraw5", "usbInterfaceNumber": 1, "usagePage": "0xFF60", "usage": "0x0061", "role": "vendor config channel -- THIS is the one used for screen control" },
-      { "hidrawNode": "hidraw7", "usbInterfaceNumber": 2, "usagePage": "0x0001 (+ consumer page 0x0C)", "usage": "0x0002 (mouse) + consumer controls", "role": "mouse + consumer-control combo interface" },
-      { "hidrawNode": "hidraw8", "usbInterfaceNumber": 3, "usagePage": "0xFF31", "usage": "0x0074", "role": "vendor-defined, input-only, 32-byte reports -- purpose not investigated, not used by screen control" }
+      {
+        "hidrawNode": "hidraw4",
+        "usbInterfaceNumber": 0,
+        "usagePage": "0x0001",
+        "usage": "0x0006",
+        "role": "standard keyboard (Generic Desktop / Keyboard)"
+      },
+      {
+        "hidrawNode": "hidraw5",
+        "usbInterfaceNumber": 1,
+        "usagePage": "0xFF60",
+        "usage": "0x0061",
+        "role": "vendor config channel -- THIS is the one used for screen control"
+      },
+      {
+        "hidrawNode": "hidraw7",
+        "usbInterfaceNumber": 2,
+        "usagePage": "0x0001 (+ consumer page 0x0C)",
+        "usage": "0x0002 (mouse) + consumer controls",
+        "role": "mouse + consumer-control combo interface"
+      },
+      {
+        "hidrawNode": "hidraw8",
+        "usbInterfaceNumber": 3,
+        "usagePage": "0xFF31",
+        "usage": "0x0074",
+        "role": "vendor-defined, input-only, 32-byte reports -- purpose not investigated, not used by screen control"
+      }
     ]
   },
-
   "linuxHidrawTransport": {
     "resolvedBy": "Milestone 1 (native Rust set-time implementation), confirmed empirically against real hardware on 2026-08-10/11 -- see also the plan-review discussion where reviewers disagreed on the theoretical answer before this was tested.",
     "write": "A native write() to /dev/hidraw5 requires a leading 0x00 'report number' byte prepended before the 64-byte report -- 65 bytes total on the wire. This is the documented Linux kernel hidraw behavior for unnumbered-report HID devices (the descriptor above has no Report ID item, yet the kernel still expects a synthetic ID byte on write). Writing exactly 64 bytes (no prefix) produces garbage responses from the device (observed: a status byte of 0x0f instead of the expected 0x00/0x55, on an otherwise-matching report) -- NOT silence, an actual malformed reply.",
@@ -131,23 +474,18 @@
     "ackCount": "IMPORTANT CORRECTION to Phase 0's WebHID-based finding: Phase 0's browser capture observed exactly 2 identical inputreport events per outbound report. At the native hidraw layer, only ONE real ACK arrives per write. The '2 ACKs' pattern was a WebHID/Chrome-side artifact (e.g. dispatched to two internal listeners), not a fact about the wire protocol. Native code should expect and require exactly 1 ACK per write, not 2.",
     "hardwareConfirmation": "The full 18-report 'set time' sequence, sent with this write/read form, produced a byte-perfect ACK for every report and set the keyboard's TFT to the correct time and date -- independently reconfirmed the next morning (2026-08-11) when the keyboard's own clock had correctly ticked forward overnight to match real time, i.e. it's a genuinely running clock that was set correctly, not a static value that happened to look right once. Hour, minute, and date were all visually confirmed correct on the physical screen both times. Weekday was NOT visually confirmed -- the TFT screen has no weekday field at all (confirmed by checking), so there is nothing to look at. Weekday correctness instead rests on: the encoding logic being unit-tested against every day of the week (src/time.rs), and the device accepting the byte via a valid ACK without error -- weaker evidence than a visual check, and named as such rather than folded into the same 'confirmed' claim as hour/minute/date."
   },
-
   "unresolved": [
     {
-      "item": "why \"switch to the GIF page\" (cmd15) doesn't visually switch the TFT, even with a real GIF stored and the vendor's own tool sending the identical command",
-      "tried": "Milestone 2 round-2 hardware verification (2026-08-11): a real disposable GIF was uploaded and saved to the device via the vendor's own browser tool. This repo's cmd15 builder was then sent twice -- no visible change. To rule out a bug in this repo's cmd15 bytes, the vendor's own \"Switch to the GIF page\" button was clicked directly, with the actual wire bytes captured (`scripts/capture-hook.js`): byte-for-byte identical to `commands.cmd15_switchToGifPage.infoPackagePayload.value`. The vendor's own tool ALSO failed to switch the display. Conclusion: the command sent is correct (confirmed against the reference implementation itself), but something ELSE is required to actually make the GIF page display -- being set as \"startup animation\" first? a physical button press to cycle screens? unknown. Not investigated further this milestone (out of scope creep to chase); a follow-up would need to try the \"Set it as the startup animation\" button/command and/or a physical keyboard button press before declaring this resolved. DECISION (round 3, codex Blocker): `switch-page` in `main.rs` does NOT expose a `gif` option -- shipping a CLI command that sends a correct, ACK'd byte sequence but doesn't do what its name says is the same half-understood-shipping trap \"Clear GIF\" is already kept out for. `protocol::Page::Gif` and `CMD15_INFO_PAYLOAD` remain in the codebase, fully resolved, for whenever this is solved."
+      "item": "RESOLVED (2026-08-11): why \"switch to the GIF page\" (cmd15) appeared not to switch the TFT",
+      "tried": "Milestone 2 concluded that cmd15 was correct but that something else was needed to make the GIF page display. That was right about cmd15 and wrong about the cause. Reading the vendor bundle showed the GIF save button is not one action but THREE modes, and the byte Milestone 2 recorded as a fixed 0x00 in cmd18/cmd19 is the mode: 0 = 'set as boot animation' (max 64 frames), 1 = 'save to the device' (max 160 frames), 2 = 'save GIF to the device home page' (max 42 frames, 96x64), where mode 2's button only renders for productId 12463 and is hidden for this keyboard's 12744. Every earlier attempt had used mode 0, which stores the frames somewhere that never plays -- not on the GIF page, and not at power-up either (tested: after a replug the panel shows the home screen). Saving the same GIF with mode 1 makes it play on the TFT immediately. So cmd15 was never the problem; there was simply nothing on the GIF page to show. `switch-page gif` is still not exposed by the CLI, now only because GIF upload itself is not implemented yet -- that is a milestone, not a mystery."
     },
     {
       "item": "finish (0x42) length byte numeric meaning (why 0x38/56, not e.g. 0x00)",
       "tried": "confirmed as a stable constant across 3 live captures and the vendor source (`finishScreenControlDataPacket()` called with no arguments every time); the checksum formula using this constant is verified exactly. Only the semantic reason for the value 56 itself is unknown -- it does not block using this command."
     },
     {
-      "item": "\"Clear GIF\" (cmd 18 and 19) -- what the extra trailing 2 bytes mean",
-      "tried": "Live HID capture, Milestone 2 (2026-08-11): clicking \"Clear GIF\" sends TWO different inner commands, cmd18 then cmd19, each once (4 reports total: info18+finish+info19+finish -- no repeat loop, unlike \"Clear the picture\"). Both info-package payloads are 9 bytes (2 longer than every other command decoded so far): cmd18 = [165,90,18,0,1,5,16,1,0], cmd19 = [165,90,19,0,2,196,1,1,0]. Bytes 0-6 fit the established magic/cmd/0/N/crcHi/crcLo pattern (ga([18,0,1])=[5,16], ga([19,0,2])=[196,1], both confirmed). What N means is NOT established -- in set-time N lines up with \"a data-packet of N bytes follows,\" but no data-packet (0x41) is ever actually sent for cmd18 or cmd19, so calling N a \"data-packet length\" here would be an unverified claim. The 2 trailing bytes [1,0] are identical for both commands; meaning unknown (page/slot index? fixed marker? too few data points to tell). Deliberately NOT shipped as a CLI command in Milestone 2 -- shipping a command whose trailing bytes aren't understood, on the strength of \"the checksum matches,\" is exactly the half-understood shipping this project avoids. A follow-up milestone can capture this a few more times (different GIF slot, different starting state) to triangulate the trailing bytes, the way set-time's minute/second fields were triangulated from multiple captures in Phase 0."
-    },
-    {
-      "item": "picture/GIF upload payload format",
-      "tried": "out of scope for this phase entirely -- not investigated."
+      "item": "cmd 18 and 19 -- previously filed as \"Clear GIF\" with two unexplained trailing bytes",
+      "tried": "Largely resolved 2026-08-11 by capturing a real GIF save and reading the vendor source. cmd18/cmd19 are not a clear command: they are GIF session OPEN and CLOSE, and the trailing bytes are parameters, not padding. Vendor source: open sends [165,90,18,0,2,crc,crc,mode,0] and [165,90,19,0,2,crc,crc,mode,0]; close sends the same two with the last byte carrying the FRAME COUNT for cmd18 and the FPS for cmd19. A captured 2-frame save at 30 fps closes with frame count 0x02 and 0x1e (=30) in exactly those positions. The 'Clear GIF' flavour Milestone 2 captured is the same pair with mode byte 1. Between open and close the vendor sends, per frame, cmd16 with a frame index followed by cmd17 declaring 30720 bytes and then the same 56-byte bulk packets this milestone implements. NOT shipped here: GIF upload is its own milestone, and this entry stays open until it is implemented and verified on hardware rather than only decoded."
     },
     {
       "item": "2.4G dongle and Bluetooth connection modes -- whether the config interface is present/functional over either",
@@ -158,6 +496,5 @@
       "tried": "not captured -- the hook was installed after the device was already connected and open (a prior WebHID permission grant was already in place from an earlier session). The vendor's click-handler source (scripts/vendor-source-excerpt.js) shows no reference to connection-time state, which is a weak signal there's no required init handshake, but this is not independently confirmed by capturing a fresh connect sequence."
     }
   ],
-
   "fixtureSchemaNote": "Every report in fixtures/*.json carries these required keys: transaction_id, command_index, fragment_index, direction, hid_method, report_id, payload_hex. fragment_index is always 0 for every report in this phase's fixtures -- discovery found opcodes 0x40/0x41/0x42 are independently complete report types, not fragments requiring reassembly (see $schema_note above), so the field exists per the fixture schema but carries no ordering information here."
 }

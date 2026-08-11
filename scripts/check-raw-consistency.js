@@ -27,11 +27,25 @@ function ok(msg) { console.log(`OK:   ${msg}`); }
 // asserted "some report with this command/direction/opcode matches
 // somewhere," which passed even for clear-picture's now-fixed evidence gap
 // (only 1 of 16 repeats was stored) without ever checking count or order.
+//
+// The picture-upload pair (Milestone 3) is the strongest of the four: its
+// fixture is not a transcription of the capture at all, it is REGENERATED
+// from fixtures/test-quadrants.png through the protocol model by
+// scripts/build-fixtures.js. So this comparison is model-vs-hardware, and a
+// mistake anywhere in the decode -- channel order, per-pixel byte order,
+// chunk size, offset encoding, the final chunk's length byte, the checksum
+// width -- fails here rather than shipping.
 const PAIRS = [
   { rawFile: 'raw/cap1-hidlog.json', fixtureFile: 'cap1.json' },
   { rawFile: 'raw/cap-page-switch-hidlog.json', fixtureFile: 'page-switch.json' },
   { rawFile: 'raw/cap-clear-picture-hidlog.json', fixtureFile: 'clear-picture.json' },
+  { rawFile: 'raw/cap-picture-upload-hidlog.json', fixtureFile: 'picture-upload.json' },
 ];
+
+// Above this many reports, print one summary line per pair instead of one
+// line per report: picture-upload alone is 552 reports, and burying a real
+// failure in 550 lines of "OK" is how a failure gets skimmed past.
+const VERBOSE_REPORT_LIMIT = 100;
 
 for (const { rawFile, fixtureFile } of PAIRS) {
   const raw = load(rawFile);
@@ -42,7 +56,8 @@ for (const { rawFile, fixtureFile } of PAIRS) {
   // trusted.
   for (const e of raw.entries) {
     const n = e.hex.trim().split(/\s+/).length;
-    if (n !== 64) fail(`${rawFile}: ${e.dir} ${e.opcode} cmd${e.cmd} is ${n} bytes, expected 64`);
+    const which = e.name !== undefined ? e.name : `cmd${e.cmd}`;
+    if (n !== 64) fail(`${rawFile}: ${e.dir} ${e.opcode} ${which} is ${n} bytes, expected 64`);
   }
 
   if (raw.entries.length !== fixture.reports.length) {
@@ -51,6 +66,9 @@ for (const { rawFile, fixtureFile } of PAIRS) {
     );
     continue;
   }
+
+  const verbose = raw.entries.length <= VERBOSE_REPORT_LIMIT;
+  let matched = 0;
 
   for (let i = 0; i < raw.entries.length; i++) {
     const rawEntry = raw.entries[i];
@@ -66,10 +84,17 @@ for (const { rawFile, fixtureFile } of PAIRS) {
       continue;
     }
     if (report.payload_hex !== rawEntry.hex) {
+      // Always reported in full, however large the pair: a mismatch is the
+      // entire point of this script.
       fail(`${label}: bytes don't match:\n  raw:     ${rawEntry.hex}\n  fixture: ${report.payload_hex}`);
     } else {
-      ok(`${label}: matches raw capture exactly, same position`);
+      matched++;
+      if (verbose) ok(`${label}: matches raw capture exactly, same position`);
     }
+  }
+
+  if (!verbose) {
+    ok(`${fixtureFile}: all ${matched}/${raw.entries.length} reports match ${rawFile} exactly, in order`);
   }
 }
 

@@ -4,6 +4,62 @@ mod time;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use device::{Device, DeviceError, ReportIdForm};
+use image::ImageDecoder; // for `decoder.orientation()`
+use std::path::{Path, PathBuf};
+
+/// Anything a subcommand can fail with. `set-picture` can fail before it ever
+/// touches the device -- a missing or unreadable image is not a device error
+/// and must not be reported as one.
+#[derive(Debug)]
+enum AppError {
+    Device(DeviceError),
+    Picture(PictureError),
+}
+
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AppError::Device(e) => write!(f, "{e}"),
+            AppError::Picture(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for AppError {}
+
+impl From<DeviceError> for AppError {
+    fn from(e: DeviceError) -> Self {
+        AppError::Device(e)
+    }
+}
+
+impl From<PictureError> for AppError {
+    fn from(e: PictureError) -> Self {
+        AppError::Picture(e)
+    }
+}
+
+/// A `set-picture` failure that happened while reading or converting the
+/// image, i.e. before any HID device was opened.
+#[derive(Debug)]
+pub struct PictureError {
+    path: PathBuf,
+    detail: String,
+}
+
+impl std::fmt::Display for PictureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "could not use {} as a picture: {}\n\
+             (supported formats: PNG and JPEG. The keyboard was not contacted.)",
+            self.path.display(),
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for PictureError {}
 
 #[derive(Parser)]
 #[command(
@@ -19,19 +75,16 @@ struct Cli {
 /// `protocol.rs` stays CLI-agnostic (pure wire-format code, no clap
 /// dependency); `PageArg::into()` maps 1:1 to `protocol::Page`.
 ///
-/// `Gif` is deliberately NOT a variant here (round-3 cross-review, codex
-/// Blocker, PR #3): `protocol::Page::Gif` / cmd15's bytes are proven
-/// correct (byte-identical to the vendor's own tool, see PROTOCOL.md), but
-/// neither this repo's CLI nor the vendor's own tool actually switches the
-/// TFT to the GIF page under real hardware conditions -- some other,
-/// unknown operation is required first. Shipping a CLI command that sends
-/// a correct, ACK'd command but doesn't do what its name says is the same
-/// half-understood-shipping trap "Clear GIF" (cmd18/19) was already kept
-/// out of this milestone for. `protocol::Page::Gif` and
-/// `build_page_switch_sequence`'s Gif handling stay in `protocol.rs` --
-/// the wire format IS resolved -- just not wired up to a CLI subcommand
-/// until the missing operation is found (see `fields.json`'s
-/// `unresolved` entry).
+/// `Gif` is deliberately NOT a variant here, but for a different reason
+/// than in Milestone 2. Back then it was withheld because cmd15 appeared not
+/// to switch the panel. Milestone 3 found the real cause: the GIF had only
+/// ever been saved in the vendor's mode 0 ("set as boot animation"), which
+/// stores frames somewhere that never plays. Saved in mode 1 ("save to the
+/// device"), the GIF displays and cmd15 works.
+///
+/// It stays unexposed because GIF upload is not implemented yet, so the
+/// command would switch to a page this tool cannot put anything on. See
+/// `protocol::Page` and `fields.json`'s `unresolved`.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum PageArg {
     Home,
@@ -62,19 +115,29 @@ enum Commands {
     /// Switch the TFT screen to the given page (home or picture -- gif is
     /// decoded but deferred, see PROTOCOL.md).
     SwitchPage { page: PageArg },
-    /// Clear the currently-displayed picture. Whether this affects a
-    /// separately-stored GIF was not tested (see PROTOCOL.md) -- reaching
-    /// the GIF page to check is itself an unresolved problem, not
-    /// something specific to this command.
+    /// Clear the currently-displayed picture. Whether this also affects a
+    /// separately-stored GIF is still untested (see PROTOCOL.md).
     ClearPicture,
+    /// Upload a PNG or JPEG to the TFT screen.
+    ///
+    /// The image is stretched to the panel's fixed 160x96 with
+    /// nearest-neighbour sampling -- the same as the vendor's tool, which
+    /// draws with image smoothing switched off. Aspect ratio is not
+    /// preserved. Fully transparent pixels become black. EXIF orientation is
+    /// applied, so photos straight off a phone are not uploaded sideways.
+    SetPicture {
+        /// Path to a PNG or JPEG file.
+        path: PathBuf,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
-    let result = match cli.command {
-        Commands::SetTime { debug_no_prefix } => run_set_time(debug_no_prefix),
-        Commands::SwitchPage { page } => run_switch_page(page.into()),
-        Commands::ClearPicture => run_clear_picture(),
+    let result: Result<(), AppError> = match cli.command {
+        Commands::SetTime { debug_no_prefix } => run_set_time(debug_no_prefix).map_err(Into::into),
+        Commands::SwitchPage { page } => run_switch_page(page.into()).map_err(Into::into),
+        Commands::ClearPicture => run_clear_picture().map_err(Into::into),
+        Commands::SetPicture { path } => run_set_picture(&path),
     };
 
     if let Err(e) = result {
@@ -174,6 +237,104 @@ fn run_clear_picture() -> Result<(), DeviceError> {
     Ok(())
 }
 
+/// Reads an image file and converts it to the panel's 30720-byte RGB565
+/// frame. Pure of any device access on purpose: a bad path or a corrupt file
+/// must fail as an image problem, and must be testable without hardware.
+fn load_and_encode_picture(path: &Path) -> Result<Vec<u8>, PictureError> {
+    let fail = |detail: String| PictureError {
+        path: path.to_path_buf(),
+        detail,
+    };
+
+    let reader = image::ImageReader::open(path)
+        .map_err(|e| fail(e.to_string()))?
+        .with_guessed_format()
+        .map_err(|e| fail(e.to_string()))?;
+
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|e| fail(format!("could not decode it: {e}")))?;
+
+    // Read the EXIF orientation before taking the pixels out of the decoder:
+    // phone JPEGs commonly store the image rotated plus an orientation tag,
+    // and ignoring the tag uploads them sideways. A file with no usable tag
+    // is not an error -- most PNGs have none.
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+
+    let mut img = image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| fail(format!("could not decode it: {e}")))?;
+    img.apply_orientation(orientation);
+
+    // Nearest-neighbour, to match the vendor's `imageSmoothingEnabled =
+    // false`. An interpolating filter would produce different bytes than the
+    // vendor's tool does for the same input file.
+    let resized = img.resize_exact(
+        protocol::PANEL_W,
+        protocol::PANEL_H,
+        image::imageops::FilterType::Nearest,
+    );
+
+    let pixels = protocol::rgb565_encode(resized.to_rgba8().as_raw());
+    debug_assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
+    Ok(pixels)
+}
+
+fn run_set_picture(path: &Path) -> Result<(), AppError> {
+    // Decode FIRST, before opening the device: a missing or corrupt file
+    // should say so, not fail with "device not found" on a machine with no
+    // keyboard plugged in.
+    let pixels = load_and_encode_picture(path)?;
+    println!(
+        "encoded {} to {}x{} RGB565 ({} bytes)",
+        path.display(),
+        protocol::PANEL_W,
+        protocol::PANEL_H,
+        pixels.len()
+    );
+
+    let dev_path = device::find_device().map_err(AppError::Device)?;
+    println!("found device: {}", dev_path.display());
+
+    let dev = Device::open(&dev_path).map_err(AppError::Device)?;
+    dev.drain()
+        .map_err(|e| AppError::Device(e.with_reconnect_hint(&dev_path)))?;
+
+    let start = protocol::build_picture_upload_start();
+    let body = protocol::build_picture_upload_body(&pixels);
+    let total = protocol::picture_upload_report_count();
+    debug_assert_eq!(total, 1 + body.len());
+    println!(
+        "sending {total} reports (start, 300 ms pause, declare-size, {} pixel packets, finish)",
+        body.len() - 2
+    );
+
+    // An interrupted upload leaves a half-written frame on the panel, so say
+    // so plainly rather than only reporting the underlying I/O error: 552
+    // writes, each waiting for an ACK, is a long enough window to matter.
+    let upload_failed = |e: DeviceError| {
+        AppError::Device(e.with_reconnect_hint(&dev_path).with_note(
+            "the picture may be partially written -- re-run set-picture, or run clear-picture",
+        ))
+    };
+
+    dev.send_sequence(ReportIdForm::LeadingZeroOnWrite, &[start])
+        .map_err(upload_failed)?;
+
+    // The vendor pauses here, between the start report and declare-size --
+    // not before the bulk data. See protocol::START_TO_DECLARE_DELAY_MS.
+    std::thread::sleep(std::time::Duration::from_millis(
+        protocol::START_TO_DECLARE_DELAY_MS,
+    ));
+
+    dev.send_sequence(ReportIdForm::LeadingZeroOnWrite, &body)
+        .map_err(upload_failed)?;
+
+    println!("sent successfully. The picture should now be on the keyboard's TFT screen.");
+    Ok(())
+}
+
 #[cfg(test)]
 mod cli_tests {
     use super::*;
@@ -245,6 +406,99 @@ mod cli_tests {
             sequence[0][CMD_BYTE_OFFSET], 14,
             "expected inner cmd byte 14"
         );
+    }
+
+    // --- Milestone 3: set-picture ---
+
+    #[test]
+    fn parses_set_picture_with_a_path() {
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "set-picture", "logo.png"]).unwrap();
+        let Commands::SetPicture { path } = cli.command else {
+            panic!("expected SetPicture");
+        };
+        assert_eq!(path, PathBuf::from("logo.png"));
+    }
+
+    #[test]
+    fn set_picture_requires_a_path() {
+        assert!(Cli::try_parse_from(["yunzii-b75-tui", "set-picture"]).is_err());
+    }
+
+    // The image is decoded before the device is opened, so every one of
+    // these failure paths is reachable on a machine with no keyboard
+    // attached -- which is the point: otherwise they would all fail with
+    // "device not found" first and none of them would be tested.
+
+    #[test]
+    fn missing_file_fails_as_a_picture_error_not_a_device_error() {
+        let err = load_and_encode_picture(Path::new("/nonexistent/nope.png")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("nope.png"), "should name the file: {msg}");
+        assert!(
+            msg.contains("keyboard was not contacted"),
+            "should make clear the device was never touched: {msg}"
+        );
+    }
+
+    #[test]
+    fn zero_byte_file_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.png");
+        std::fs::write(&path, b"").unwrap();
+        assert!(load_and_encode_picture(&path).is_err());
+    }
+
+    #[test]
+    fn corrupt_image_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("corrupt.png");
+        // A valid PNG signature followed by garbage: gets past format
+        // sniffing, then fails in the decoder.
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+        bytes.extend_from_slice(b"not actually a png body at all");
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(load_and_encode_picture(&path).is_err());
+    }
+
+    #[test]
+    fn unsupported_format_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, b"this is plain text, not an image").unwrap();
+        assert!(load_and_encode_picture(&path).is_err());
+    }
+
+    #[test]
+    fn real_png_encodes_to_exactly_one_panel_frame() {
+        // The committed test image is already 160x96, so this also confirms
+        // the resize path is a no-op at the exact panel size rather than
+        // shifting pixels.
+        let pixels = load_and_encode_picture(Path::new("fixtures/test-quadrants.png")).unwrap();
+        assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
+
+        // Same bytes the vendor's own tool sent for this file: red top-left,
+        // green top-right, blue bottom-left.
+        let px = |x: usize, y: usize| {
+            let o = (y * protocol::PANEL_W as usize + x) * 2;
+            [pixels[o], pixels[o + 1]]
+        };
+        assert_eq!(px(5, 5), [0xf8, 0x00]);
+        assert_eq!(px(120, 5), [0x07, 0xe0]);
+        assert_eq!(px(5, 80), [0x00, 0x1f]);
+    }
+
+    #[test]
+    fn a_differently_sized_image_is_still_resized_to_one_full_frame() {
+        // Guards the resize step itself: whatever comes in, exactly one
+        // panel frame comes out, or build_picture_upload_body would panic.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wrong-size.png");
+        image::RgbImage::from_pixel(37, 211, image::Rgb([255, 0, 0]))
+            .save(&path)
+            .unwrap();
+        let pixels = load_and_encode_picture(&path).unwrap();
+        assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
+        assert_eq!(&pixels[0..2], &[0xf8, 0x00]);
     }
 
     #[test]
