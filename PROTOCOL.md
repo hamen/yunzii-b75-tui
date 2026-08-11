@@ -230,10 +230,12 @@ commands (switch page, clear picture/GIF) — identified by name from the
 vendor source but not yet independently HID-captured; picture/GIF upload
 payload format entirely (out of scope so far).
 
-## What's next (out of scope for this PR)
+## What's next
 
-A follow-up implementation plan covers the actual Rust/`ratatui` native tool,
-now that the wire format for one full command pair is known end-to-end. The
+Milestone 1 (this repo's native `set-time` CLI, see `README.md`) already
+ships the Rust implementation for this one command. What's left: a
+`ratatui` screen (once there's more than one action worth navigating
+between), and Milestones 2/3 (sliders, toggles, image/GIF upload) — each
+needs its own discovery pass first, same process as this document. The
 generic opcode/checksum/report-structure model above should carry over
-directly to Milestones 2/3 (sliders, toggles, image/GIF upload) — only the
-opcode-specific payload layout will differ per command.
+directly; only the opcode-specific payload layout will differ per command.

@@ -33,9 +33,9 @@ echo "==> cargo fmt --check"
 cargo fmt --check
 
 echo
-echo "==> cargo test"
-cargo test
+echo "==> cargo test --locked"
+cargo test --locked
 
 echo
-echo "==> cargo clippy --all-targets -- -D warnings"
-cargo clippy --all-targets -- -D warnings
+echo "==> cargo clippy --locked --all-targets -- -D warnings"
+cargo clippy --locked --all-targets -- -D warnings

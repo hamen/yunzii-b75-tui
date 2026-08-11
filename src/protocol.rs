@@ -52,7 +52,11 @@ fn checksum16_le(opcode: u8, length: u8, payload: &[u8]) -> [u8; 2] {
 /// framing byte -- that's a transport concern, handled by the caller/
 /// `device` module, not the wire-format layer).
 fn build_report(opcode: u8, length: u8, payload: &[u8]) -> [u8; 64] {
-    debug_assert!(
+    // A real assert (not debug_assert): the slice copy below panics anyway
+    // on an oversized payload, so this only changes the panic into a clear
+    // message instead of an opaque index-out-of-bounds -- worth paying for
+    // in release too, since it's one comparison.
+    assert!(
         payload.len() <= 64 - 7,
         "payload of {} bytes doesn't fit in the 57 bytes available after the 7-byte header",
         payload.len()

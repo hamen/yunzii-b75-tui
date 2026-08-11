@@ -117,7 +117,9 @@ little-endian for `0x40`.
 > for the full writeup.
 
 Full field-by-field mapping: `fields.json` (machine-readable) and
-`PROTOCOL.md` (human-readable, generated from it).
+`PROTOCOL.md` (human-readable prose, hand-maintained alongside it -- not
+mechanically generated, so treat `fields.json` as the source of truth if
+the two ever disagree).
 
 **Debug flags** (not needed for normal use): `--debug-no-prefix` sends
 without the leading `0x00` byte — confirmed not to work, kept only to

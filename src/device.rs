@@ -235,7 +235,12 @@ pub struct Device {
 
 impl Device {
     pub fn open(path: &Path) -> Result<Self, DeviceError> {
-        let fd = open(path, OFlag::O_RDWR | OFlag::O_NONBLOCK, Mode::empty()).map_err(|errno| {
+        let fd = open(
+            path,
+            OFlag::O_RDWR | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|errno| {
             if errno == nix::errno::Errno::EACCES {
                 DeviceError::PermissionDenied(path.to_path_buf())
             } else {
@@ -263,7 +268,18 @@ impl Device {
             let mut buf = [0u8; REPORT_LEN];
             match retry_eintr(|| read(&self.fd, &mut buf)) {
                 Ok(0) => return Ok(count),
-                Ok(_) => count += 1,
+                Ok(REPORT_LEN) => count += 1,
+                // A short read during drain is not "one drained report" --
+                // it means the fd is in a state read_one() would also
+                // reject. Surface it rather than silently miscounting.
+                Ok(n) => {
+                    return Err(DeviceError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "drain: expected a {REPORT_LEN}-byte read or EAGAIN, got {n} bytes"
+                        ),
+                    )));
+                }
                 Err(DeviceError::Io(e))
                     if e.raw_os_error() == Some(nix::errno::Errno::EAGAIN as i32) =>
                 {
@@ -277,33 +293,76 @@ impl Device {
         ))))
     }
 
-    fn poll_readable(&self, timeout: Duration) -> Result<bool, DeviceError> {
-        let mut fds = [PollFd::new(self.fd.as_fd(), PollFlags::POLLIN)];
-        // Clamp (not truncate) to u16::MAX -- a plain `as u16` cast on a
-        // larger value would silently wrap to a much SHORTER timeout
-        // (e.g. 70000ms -> 4464ms), which is a real correctness bug, not
-        // just an edge case. Clamping caps the wait, it never shortens it
-        // unexpectedly. Not reachable today (ACK_TIMEOUT is 500ms) but
-        // this function shouldn't rely on that staying true.
-        let timeout_ms = timeout.as_millis().min(u16::MAX as u128) as u16;
-        let n = retry_eintr(|| poll(&mut fds, PollTimeout::from(timeout_ms)))?;
-        Ok(n > 0)
+    /// Waits up to `timeout` for the fd to become readable (`POLLIN`) or
+    /// writable (`POLLOUT`). EINTR restarts the wait with the REMAINING
+    /// time, not the original timeout -- a naive "retry with the same
+    /// timeout" would let repeated signals push the total wait arbitrarily
+    /// past the caller's intended deadline.
+    fn poll_for(&self, flags: PollFlags, timeout: Duration) -> Result<bool, DeviceError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+            // Clamp (not truncate) to u16::MAX -- a plain `as u16` cast on a
+            // larger value would silently wrap to a much SHORTER timeout
+            // (e.g. 70000ms -> 4464ms), a real correctness bug, not just an
+            // edge case. Not reachable today (ACK_TIMEOUT is 500ms) but
+            // this function shouldn't rely on that staying true.
+            let timeout_ms = remaining.as_millis().min(u16::MAX as u128) as u16;
+            let mut fds = [PollFd::new(self.fd.as_fd(), flags)];
+            match poll(&mut fds, PollTimeout::from(timeout_ms)) {
+                Ok(n) => return Ok(n > 0),
+                Err(nix::errno::Errno::EINTR) => continue,
+                Err(e) => return Err(DeviceError::Io(io::Error::from(e))),
+            }
+        }
     }
 
+    fn poll_readable(&self, timeout: Duration) -> Result<bool, DeviceError> {
+        self.poll_for(PollFlags::POLLIN, timeout)
+    }
+
+    fn poll_writable(&self, timeout: Duration) -> Result<bool, DeviceError> {
+        self.poll_for(PollFlags::POLLOUT, timeout)
+    }
+
+    /// Writes one report, retrying on `EAGAIN` (the device's send queue is
+    /// momentarily full -- expected under a non-blocking fd, not an error)
+    /// by waiting for `POLLOUT` up to `ACK_TIMEOUT`, rather than treating
+    /// the first `EAGAIN` as a hard failure and aborting a healthy
+    /// transaction.
     fn write_report(
         &self,
         form: ReportIdForm,
         report: &[u8; REPORT_LEN],
     ) -> Result<(), DeviceError> {
         let buf = frame_for_write(form, report);
-        let n = retry_eintr(|| write(&self.fd, &buf))?;
-        if n != buf.len() {
-            return Err(DeviceError::Io(io::Error::new(
-                io::ErrorKind::WriteZero,
-                format!("short write: {n} of {} bytes", buf.len()),
-            )));
+        let deadline = Instant::now() + ACK_TIMEOUT;
+        loop {
+            match retry_eintr(|| write(&self.fd, &buf)) {
+                Ok(n) if n == buf.len() => return Ok(()),
+                Ok(n) => {
+                    return Err(DeviceError::Io(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        format!("short write: {n} of {} bytes", buf.len()),
+                    )));
+                }
+                Err(DeviceError::Io(e))
+                    if e.raw_os_error() == Some(nix::errno::Errno::EAGAIN as i32) =>
+                {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() || !self.poll_writable(remaining)? {
+                        return Err(DeviceError::Io(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "write() kept returning EAGAIN (device send queue full?) past the deadline",
+                        )));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         }
-        Ok(())
     }
 
     /// Reads one report. Confirmed against real hardware (see PROTOCOL.md's
