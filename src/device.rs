@@ -34,7 +34,13 @@ const EXPECTED_REPORT_DESCRIPTOR: [u8; 34] = [
 
 const REPORT_LEN: usize = 64;
 const ACK_TIMEOUT: Duration = Duration::from_millis(500);
-const DRAIN_TIMEOUT: Duration = Duration::from_millis(150);
+// Iteration cap, NOT a timing mechanism: a correctly-behaving O_NONBLOCK fd
+// returns EAGAIN immediately once truly empty, so drain() should never need
+// many iterations. This bounds a pathologically chatty node -- it must
+// never make drain() sleep-wait on the normal (empty) path (an earlier
+// version used poll() with a timeout here, which meant the happy path
+// always blocked for the full timeout even with nothing to drain).
+const DRAIN_MAX_ITERATIONS: usize = 64;
 // Phase 0's WebHID capture observed 2 identical `inputreport` events per
 // outbound report -- but empirical testing against real hardware via native
 // hidraw (this milestone) shows only ONE real ACK arrives at that layer.
@@ -95,12 +101,16 @@ impl From<io::Error> for DeviceError {
 
 fn parse_hid_id_line(uevent: &str) -> Option<(u16, u16)> {
     // uevent contains a line like: HID_ID=0003:000028E9:000031C8
+    // Parse each field as a full u32 and truncate to u16, rather than
+    // slicing a fixed [4..] offset -- avoids a panic if a field is ever
+    // shorter than expected (real sysfs always zero-pads to 8 hex digits,
+    // but this doesn't rely on that).
     for line in uevent.lines() {
         if let Some(rest) = line.strip_prefix("HID_ID=") {
             let parts: Vec<&str> = rest.split(':').collect();
             if parts.len() == 3 {
-                let vid = u16::from_str_radix(&parts[1][4..], 16).ok()?;
-                let pid = u16::from_str_radix(&parts[2][4..], 16).ok()?;
+                let vid = u32::from_str_radix(parts[1], 16).ok()? as u16;
+                let pid = u32::from_str_radix(parts[2], 16).ok()? as u16;
                 return Some((vid, pid));
             }
         }
@@ -112,8 +122,16 @@ fn parse_hid_id_line(uevent: &str) -> Option<(u16, u16)> {
 /// `uevent`) AND the exact report-descriptor byte match as separate
 /// conditions -- the descriptor alone doesn't encode VID/PID.
 pub fn find_device() -> Result<PathBuf, DeviceError> {
+    find_device_under(Path::new("/sys/class/hidraw"), Path::new("/dev"))
+}
+
+/// Same logic as `find_device`, but with the sysfs and device-node roots
+/// injectable -- lets tests exercise the zero-match, multiple-match, and
+/// descriptor-mismatch paths against a fake directory tree, without real
+/// hardware.
+fn find_device_under(sys_hidraw_root: &Path, dev_root: &Path) -> Result<PathBuf, DeviceError> {
     let mut candidates = Vec::new();
-    let entries = fs::read_dir("/sys/class/hidraw").map_err(DeviceError::Io)?;
+    let entries = fs::read_dir(sys_hidraw_root).map_err(DeviceError::Io)?;
 
     for entry in entries.flatten() {
         let sys_path = entry.path();
@@ -144,7 +162,7 @@ pub fn find_device() -> Result<PathBuf, DeviceError> {
             continue;
         }
 
-        candidates.push(PathBuf::from(format!("/dev/{name}")));
+        candidates.push(dev_root.join(&name));
     }
 
     match candidates.len() {
@@ -174,21 +192,16 @@ impl Device {
         })
     }
 
-    /// Drains any currently-readable data, capped at DRAIN_TIMEOUT so a
-    /// chatty node can't hang this step. Returns how many reports were
-    /// drained (0 is the expected, healthy case before a fresh write).
+    /// Drains any currently-readable data WITHOUT waiting for anything new
+    /// -- reads directly on the non-blocking fd until EAGAIN, no poll().
+    /// This must never sleep on the happy (nothing to drain) path, so it
+    /// intentionally does not wait for readability first; it just tries.
+    /// Returns how many reports were drained (0 is the expected, healthy
+    /// case before a fresh write).
     pub fn drain(&self) -> Result<usize, DeviceError> {
-        let deadline = Instant::now() + DRAIN_TIMEOUT;
         let mut count = 0;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            if !self.poll_readable(remaining)? {
-                break;
-            }
-            let mut buf = [0u8; REPORT_LEN + 1];
+        for _ in 0..DRAIN_MAX_ITERATIONS {
+            let mut buf = [0u8; REPORT_LEN];
             match read(&self.fd, &mut buf) {
                 Ok(0) => break,
                 Ok(_) => count += 1,
@@ -235,28 +248,20 @@ impl Device {
         Ok(())
     }
 
-    /// Reads one report, normalizing away an optional leading 0x00 byte if
-    /// present (reads from an unnumbered-report interface do NOT get a
-    /// synthetic report-ID byte per the documented Linux hidraw behavior --
-    /// this normalization exists for the discovery phase, where both forms
-    /// are still being tried; the shipped, resolved code path expects a
-    /// fixed, known reply shape once the form is settled).
+    /// Reads one report. Confirmed against real hardware (see PROTOCOL.md's
+    /// "Linux hidraw write/read byte layout"): reads from this unnumbered-
+    /// report interface are always exactly 64 bytes, with NO leading
+    /// report-ID byte -- asymmetric with `write()`, which needs one. A read
+    /// of any other length is an error, not silently tolerated: the
+    /// resolved protocol has one known reply shape, and a mismatch means
+    /// something is actually wrong, not just "the other form."
     fn read_one(&self) -> Result<Option<[u8; REPORT_LEN]>, DeviceError> {
-        let mut buf = [0u8; REPORT_LEN + 1];
+        let mut buf = [0u8; REPORT_LEN];
         match read(&self.fd, &mut buf) {
-            Ok(REPORT_LEN) => {
-                let mut out = [0u8; REPORT_LEN];
-                out.copy_from_slice(&buf[..REPORT_LEN]);
-                Ok(Some(out))
-            }
-            Ok(n) if n == REPORT_LEN + 1 && buf[0] == 0x00 => {
-                let mut out = [0u8; REPORT_LEN];
-                out.copy_from_slice(&buf[1..REPORT_LEN + 1]);
-                Ok(Some(out))
-            }
+            Ok(REPORT_LEN) => Ok(Some(buf)),
             Ok(n) => Err(DeviceError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unexpected read length {n}"),
+                format!("expected a {REPORT_LEN}-byte read, got {n}"),
             ))),
             Err(nix::errno::Errno::EAGAIN) => Ok(None),
             Err(e) => Err(DeviceError::Io(io::Error::from(e))),
@@ -280,10 +285,17 @@ impl Device {
         true
     }
 
-    /// Sends one report and waits for exactly 2 matching ACKs within one
-    /// 500ms deadline covering both. Aborts (returns Err) on a short write,
-    /// zero ACKs, exactly one ACK, or a non-matching ACK -- per the plan,
-    /// this is a hard error, not a soft continue.
+    /// Sends one report and waits for exactly EXPECTED_ACKS_PER_WRITE (1)
+    /// matching ACK within the ACK_TIMEOUT deadline, then stops reading --
+    /// it does NOT itself detect an unexpected extra ACK arriving after
+    /// that (an unexpected 2nd report would surface as a drained/warned
+    /// leftover on the *next* write via `send_sequence`'s drain step, not
+    /// as an error from this function). Aborts (returns Err) on a short
+    /// write, zero ACKs, or a non-matching ACK -- per the plan, this is a
+    /// hard error, not a soft continue. (Phase 0's WebHID capture saw 2
+    /// ACKs per report; confirmed empirically in this milestone that only 1
+    /// real ACK arrives at the native hidraw layer -- see PROTOCOL.md's
+    /// "Linux hidraw write/read byte layout" section.)
     pub fn send_and_await_acks(
         &self,
         form: ReportIdForm,
@@ -395,6 +407,121 @@ impl std::fmt::Debug for Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    /// Builds a fake `/sys/class/hidraw/<name>/device/{uevent,report_descriptor}`
+    /// tree under `root` for one node, so `find_device_under` can be tested
+    /// without real hardware.
+    fn write_fake_hidraw_node(root: &Path, name: &str, vid: u16, pid: u16, descriptor: &[u8]) {
+        let device_dir = root.join(name).join("device");
+        fs::create_dir_all(&device_dir).unwrap();
+        fs::write(
+            device_dir.join("uevent"),
+            format!("DRIVER=hid-generic\nHID_ID=0003:{vid:08X}:{pid:08X}\n"),
+        )
+        .unwrap();
+        fs::write(device_dir.join("report_descriptor"), descriptor).unwrap();
+    }
+
+    #[test]
+    fn find_device_under_zero_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        // An empty hidraw root -- no nodes at all.
+        fs::create_dir_all(tmp.path()).unwrap();
+        let result = find_device_under(tmp.path(), Path::new("/dev"));
+        assert!(matches!(result, Err(DeviceError::NoMatchingDevice)));
+    }
+
+    #[test]
+    fn find_device_under_wrong_vid_pid_is_zero_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fake_hidraw_node(
+            tmp.path(),
+            "hidraw0",
+            0xABCD,
+            0x1234,
+            &EXPECTED_REPORT_DESCRIPTOR,
+        );
+        let result = find_device_under(tmp.path(), Path::new("/dev"));
+        assert!(matches!(result, Err(DeviceError::NoMatchingDevice)));
+    }
+
+    #[test]
+    fn find_device_under_descriptor_mismatch_is_zero_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Right VID/PID, wrong descriptor -- must not match (a firmware
+        // revision or a different interface under the same VID/PID).
+        write_fake_hidraw_node(tmp.path(), "hidraw0", VENDOR_ID, PRODUCT_ID, &[0xAA, 0xBB]);
+        let result = find_device_under(tmp.path(), Path::new("/dev"));
+        assert!(matches!(result, Err(DeviceError::NoMatchingDevice)));
+    }
+
+    #[test]
+    fn find_device_under_one_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fake_hidraw_node(
+            tmp.path(),
+            "hidraw5",
+            VENDOR_ID,
+            PRODUCT_ID,
+            &EXPECTED_REPORT_DESCRIPTOR,
+        );
+        let result = find_device_under(tmp.path(), Path::new("/dev")).unwrap();
+        assert_eq!(result, Path::new("/dev/hidraw5"));
+    }
+
+    #[test]
+    fn find_device_under_multiple_matches_refuses_to_guess() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_fake_hidraw_node(
+            tmp.path(),
+            "hidraw5",
+            VENDOR_ID,
+            PRODUCT_ID,
+            &EXPECTED_REPORT_DESCRIPTOR,
+        );
+        write_fake_hidraw_node(
+            tmp.path(),
+            "hidraw9",
+            VENDOR_ID,
+            PRODUCT_ID,
+            &EXPECTED_REPORT_DESCRIPTOR,
+        );
+        let result = find_device_under(tmp.path(), Path::new("/dev"));
+        match result {
+            Err(DeviceError::MultipleMatchingDevices(paths)) => assert_eq!(paths.len(), 2),
+            other => panic!("expected MultipleMatchingDevices, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_device_under_mixed_nodes_picks_only_the_real_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The real device exposes 4 interfaces; only one should match.
+        write_fake_hidraw_node(
+            tmp.path(),
+            "hidraw4",
+            VENDOR_ID,
+            PRODUCT_ID,
+            &[0x05, 0x01, 0x09, 0x06],
+        ); // keyboard interface, wrong descriptor
+        write_fake_hidraw_node(
+            tmp.path(),
+            "hidraw5",
+            VENDOR_ID,
+            PRODUCT_ID,
+            &EXPECTED_REPORT_DESCRIPTOR,
+        ); // the config channel
+        write_fake_hidraw_node(
+            tmp.path(),
+            "hidraw7",
+            0xABCD,
+            0x1234,
+            &EXPECTED_REPORT_DESCRIPTOR,
+        ); // right descriptor, wrong VID/PID (shouldn't happen in reality, but exercises the AND condition)
+        let result = find_device_under(tmp.path(), Path::new("/dev")).unwrap();
+        assert_eq!(result, Path::new("/dev/hidraw5"));
+    }
 
     #[test]
     fn parses_hid_id_line() {

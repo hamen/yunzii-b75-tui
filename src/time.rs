@@ -14,12 +14,13 @@ pub struct ClockDateFields {
     pub date: u8,    // day of month
 }
 
-/// Maps chrono's `Weekday` (Monday=0..Sunday=6, `num_days_from_monday()`) to
-/// the vendor's convention (Monday=1..Sunday=7). NOT the same as chrono's
-/// own `Weekday::number_from_monday()` by coincidence -- verified explicitly
-/// below with a unit test per calendar day, not assumed.
+/// Maps chrono's `Weekday` to the vendor's convention (Monday=1..Sunday=7).
+/// This IS the same as chrono's own `Weekday::number_from_monday()` -- using
+/// that directly rather than `num_days_from_monday() + 1` (an earlier
+/// version of this comment incorrectly claimed they differed; they don't,
+/// verified explicitly below with a unit test per calendar day).
 fn weekday_to_vendor_encoding(weekday: chrono::Weekday) -> u8 {
-    weekday.num_days_from_monday() as u8 + 1
+    weekday.number_from_monday() as u8
 }
 
 /// Snapshots local wall-clock time ONCE (the vendor's own code samples via

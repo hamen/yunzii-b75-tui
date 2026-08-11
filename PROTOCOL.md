@@ -161,7 +161,11 @@ const updateDeviceTime = async () => {
 - The whole sequence repeats exactly 3 times per click — a literal loop in
   the vendor's code, not a retry-on-failure heuristic.
 - Every outbound report gets exactly 2 identical `inputreport` ACKs from the
-  device (byte offset 6 flips `0x00→0x55`).
+  device (byte offset 6 flips `0x00→0x55`) **as observed via WebHID in the
+  browser**. This is Phase 0's original finding and is left as-is here for
+  history — but see "Linux hidraw write/read byte layout" below: at the
+  native hidraw layer, only 1 real ACK arrives per write. The "2 ACKs"
+  count was specific to the WebHID/Chrome transport, not the wire protocol.
 
 Local time is used throughout (`hour()`/`minute()`/etc. on a JS `Date`
 object, which read local time unless explicitly converted) — no explicit
@@ -200,9 +204,15 @@ empirically against real hardware (see `fields.json`'s
   pattern was a WebHID/Chrome-side artifact, not a wire-protocol fact.
 
 Confirmed by sending the full 18-report "set time" sequence and visually
-verifying the TFT screen showed the correct time and date — then
-reconfirmed the next day when the keyboard's own clock had correctly
-ticked forward overnight to match real time.
+verifying the TFT screen showed the correct **hour, minute, and date** —
+then reconfirmed the next day when the keyboard's own clock had correctly
+ticked forward overnight to match real time. **Weekday was not visually
+confirmed** — the TFT screen has no weekday field at all, so there's
+nothing to check on-screen. Weekday correctness instead rests on the
+encoding logic being unit-tested against every day of the week
+(`src/time.rs`) plus the device accepting the byte via a valid ACK — weaker
+evidence than a visual check, and intentionally not folded into the same
+"confirmed" claim as hour/minute/date.
 
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
