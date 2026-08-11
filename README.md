@@ -1,29 +1,44 @@
-# Yunzii B75 Pro Max — native screen control for Linux (no browser needed)
+![Yunzii B75 Pro Max header](header.png)
 
-The Yunzii B75 Pro Max keyboard has a small TFT screen (clock / picture / GIF).
-The only configuration tool the vendor ships is a browser-based WebHID app at
-[yunzii-game.com](https://yunzii-game.com/) (Chrome/Edge/Opera only, no native
-Linux app) — it works, but it always needs a browser tab open.
+<div align="center">
 
-Goal: a native Rust TUI that talks directly to `/dev/hidraw*` for this device,
-with zero browser/WebHID dependency, eventually covering the same controls as
-the site's "Screen Settings" panel (picture upload, GIF upload,
-brightness/chroma/saturation, grayscale/fuzzy/sharpening toggles, image
-placement, page switching, clear picture/GIF, update device time).
+![Rust](https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=white)
+![Protocol](https://img.shields.io/badge/protocol-USB%20HID%20(hidraw)-blueviolet?logo=usb&logoColor=white)
+![Checks](https://img.shields.io/badge/checks-bin%2Fci-brightgreen)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+</div>
+
+# ⌨️ Yunzii B75 Pro Max — native screen control for Linux
+
+No browser needed. 🎉
+
+The Yunzii B75 Pro Max keyboard has a small TFT screen (clock / picture /
+GIF). The only configuration tool the vendor ships is a browser-based WebHID
+app at [yunzii-game.com](https://yunzii-game.com/) (Chrome/Edge/Opera only,
+no native Linux app) — it works, but it always needs a browser tab open.
+
+This repo talks directly to the keyboard over `/dev/hidraw*`, no browser, no
+WebHID, no tab to keep around.
 
 ```
 USB ID 28e9:31c8  GDMicroelectronics YUNZII B75 PRO MAX Keyboard
 ```
 
-## Status
+---
 
-**Milestone 1: `set-time` works.** The clock/date protocol is fully decoded
-(see `PROTOCOL.md`) and there's a native CLI for it — no `ratatui` screen
-yet, just this one command. Sliders, toggles, and image/GIF upload are not
-implemented yet (each needs its own protocol discovery phase first, same
-process as `set-time`).
+## 🗺️ Status
 
-## Quick start
+**⏰ `set-time` works!** The clock/date protocol is fully decoded (see
+`PROTOCOL.md`) and there's a native CLI for it. No `ratatui` screen yet —
+just this one command, done well. Sliders, toggles, and image/GIF upload
+aren't implemented yet; each gets its own reverse-engineering pass first,
+same process as `set-time` below. 🚧
+
+---
+
+## ⚡ Quick start
 
 ```bash
 cargo build --release
@@ -33,22 +48,26 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ./target/release/yunzii-b75-tui set-time
 ```
 
-Requires: [Rust](https://rustup.rs) (for `bin/ci`'s `cargo` steps too), the
-keyboard connected via USB-C (2.4G dongle / Bluetooth untested), and the
+Requires: [Rust](https://rustup.rs) 🦀 (for `bin/ci`'s `cargo` steps too),
+the keyboard connected via USB-C (2.4G dongle / Bluetooth untested), and the
 vendor's browser tab (if any) closed — WebHID and this tool can't hold the
 device open at the same time.
 
-## Hardware
+---
+
+## 🔧 Hardware
 
 Any unit that enumerates as USB `28e9:31c8` should work, since the config
 channel is a standard QMK/VIA-style Raw HID interface (usage page `0xFF60`,
-usage `0x61`, report ID 0). Interface numbering can vary by machine/session —
-see `PROTOCOL.md` for how to re-identify it on yours.
+usage `0x61`, unnumbered report). Interface numbering can vary by
+machine/session — see `PROTOCOL.md` for how to re-identify it on yours.
 
-## How the protocol was reverse-engineered
+---
+
+## 🔍 How the protocol was reverse-engineered
 
 The vendor's config page talks to the keyboard over WebHID. Rather than
-guessing at the byte format blind, this repo's discovery phase:
+guessing at the byte format blind, this repo:
 
 1. Hooks `HIDDevice.prototype.sendReport`/`sendFeatureReport` and the
    `inputreport` event on the live page (see `scripts/capture-hook.js`) to
@@ -60,12 +79,40 @@ guessing at the byte format blind, this repo's discovery phase:
 3. Verifies the resulting byte-level model against real captured traffic with
    runnable scripts (`scripts/verify-checksums.js`, `scripts/check-coverage.js`,
    `scripts/check-raw-consistency.js`).
+4. Resolves the remaining native-transport questions (does `write()` need a
+   report-ID byte? how many ACKs?) empirically, against real hardware, once
+   there's Rust code to test with.
 
 See `PROTOCOL.md` for the decoded format, `fixtures/` for the decoded
 per-capture evidence (checksums and structure independently re-verified
 against the real device), and `fixtures/raw/` for a minimally processed
 capture log that `fixtures/cap1.json` is checked against byte-for-byte.
 
-## License
+---
+
+## 📡 Protocol reference
+
+| Opcode | Name | What it carries |
+|--------|------|------------------|
+| `0x40` | Info package | Constant header + inner CRC-16, per command |
+| `0x41` | Data packet | The actual payload (e.g. `[hour, minute, second]`) |
+| `0x42` | Finish | Constant, no payload — commits the group |
+
+Every 64-byte report is checksummed with a plain byte sum (**not** a CRC):
+`opcode + length + sum(payload)`, 8-bit for `0x41`/`0x42`, 16-bit
+little-endian for `0x40`.
+
+> ⚠️ Native `write()` to `/dev/hidraw*` needs a **leading `0x00` byte**
+> (65 bytes total) — this unnumbered-report interface still wants the
+> synthetic report-ID byte on write, confirmed against real hardware.
+> `read()` does **not** get that prefix back (64 bytes). See `PROTOCOL.md`
+> for the full writeup.
+
+Full field-by-field mapping: `fields.json` (machine-readable) and
+`PROTOCOL.md` (human-readable, generated from it).
+
+---
+
+## 📄 License
 
 MIT — see `LICENSE`.
