@@ -606,4 +606,77 @@ mod tests {
         assert!(!s.contains("chroma"), "got {s}");
         assert!(!s.contains("blur"), "got {s}");
     }
+
+    /// The whole documented chain, on a flat field so the two spatial filters
+    /// are computable by hand.
+    ///
+    /// A flat field is exactly what makes this checkable: both sharpen and
+    /// blur use normalised kernels, so an interior pixel of a uniform image
+    /// passes through them untouched, and the first four stages can be
+    /// followed on paper.
+    #[test]
+    fn all_six_stages_in_order_produce_exactly_this() {
+        let a = Adjustments {
+            brightness: 0.2,
+            chroma: 0.5,
+            saturation: 0.5,
+            grayscale: true,
+            sharpen: true,
+            blur: true,
+        };
+        let mut i = RgbaImage::from_pixel(7, 7, Rgba([100, 100, 100, 255]));
+        a.apply(&mut i);
+
+        // brightness: +floor(0.2*255 + 0.5) = +51        -> 151,151,151
+        // chroma 0.5: r*1.5 = 226.5 -> 226 (tie, 226 even)
+        //             g*1.25 = 188.75 -> 189
+        //             b*0.5 = 75.5 -> 76 (tie, 75 odd)
+        // saturation 0.5: w = -0.5, max = 226
+        //             g: 189 + (226-189)*-0.5 = 170.5 -> 170 (tie, even)
+        //             b: 76 + (226-76)*-0.5 = 1
+        // grayscale: (226 + 170 + 1)/3 = 132.33 -> 132
+        // sharpen, blur: normalised kernels over a flat field -> unchanged
+        assert_eq!(i.get_pixel(3, 3).0, [132, 132, 132, 255]);
+    }
+
+    /// Chroma can push a channel past both ends at once.
+    #[test]
+    fn chroma_clamps_at_both_ends() {
+        let mut i = one([200, 10, 200, 255]);
+        chroma(&mut i, 1.0); // r*2 = 400, b*0 = 0
+        assert_eq!(i.get_pixel(0, 0).0, [255, 15, 0, 255]);
+    }
+
+    /// Saturation overshoots below zero on the way out, and saturates the lot
+    /// on the way in.
+    #[test]
+    fn saturation_clamps_at_both_ends() {
+        // Pushing away from the max drives the darkest channel negative.
+        let mut i = one([10, 10, 250, 255]);
+        saturation(&mut i, 1.0); // 10 + (250-10)*-1 = -230
+        assert_eq!(i.get_pixel(0, 0).0, [0, 0, 250, 255]);
+
+        // Pulling toward it flattens everything onto the max.
+        let mut i = one([0, 120, 255, 255]);
+        saturation(&mut i, -1.0);
+        assert_eq!(i.get_pixel(0, 0).0, [255, 255, 255, 255]);
+    }
+
+    /// Blur cannot overshoot: its kernel is normalised and every weight is
+    /// positive, so a result always lies between the darkest and brightest
+    /// input it saw. Asserted as staying strictly inside an extreme input
+    /// rather than "<= 255", which a `u8` guarantees for free.
+    #[test]
+    fn blur_stays_between_the_inputs_it_saw() {
+        let mut i = RgbaImage::new(6, 1);
+        for x in 0..6 {
+            i.put_pixel(x, 0, Rgba([if x % 2 == 0 { 0 } else { 255 }, 0, 0, 255]));
+        }
+        blur(&mut i);
+        let v: Vec<u8> = (0..6).map(|x| i.get_pixel(x, 0).0[0]).collect();
+        assert!(
+            v.iter().any(|c| *c > 0 && *c < 255),
+            "alternating black and white must average into the middle: {v:?}"
+        );
+    }
 }

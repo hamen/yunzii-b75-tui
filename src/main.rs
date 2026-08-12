@@ -712,6 +712,92 @@ mod cli_tests {
         assert!(msg.contains("re-run set-gif"), "and how to fix it: {msg}");
     }
 
+    // --- Milestone 6: the adjustment flags ---
+
+    #[test]
+    fn parse_unit_accepts_the_vendor_range_and_nothing_else() {
+        for good in ["-1", "-1.0", "0", "0.37", "1", "1.0"] {
+            assert!(parse_unit(good).is_ok(), "{good} is inside -1..1");
+        }
+        for bad in ["1.01", "-1.01", "2", "-5", "abc", "", "NaN", "inf"] {
+            assert!(parse_unit(bad).is_err(), "{bad} must be refused");
+        }
+        assert_eq!(parse_unit("0.5").unwrap(), 0.5);
+    }
+
+    /// Clap is wired to the bounded parser on both subcommands.
+    ///
+    /// The binary-level tests in `tests/cli.rs` cover the messages; these
+    /// cover the wiring, which is the part that can silently come loose.
+    #[test]
+    fn clap_bounds_every_adjustment_on_both_commands() {
+        for cmd in ["set-picture", "set-gif"] {
+            for flag in ["--brightness", "--chroma", "--saturation"] {
+                assert!(
+                    Cli::try_parse_from(["yunzii-b75-tui", cmd, "f", flag, "0.5"]).is_ok(),
+                    "{cmd} {flag} 0.5"
+                );
+                assert!(
+                    Cli::try_parse_from(["yunzii-b75-tui", cmd, "f", flag, "-1"]).is_ok(),
+                    "{cmd} {flag} -1 -- negatives must not be read as another flag"
+                );
+                assert!(
+                    Cli::try_parse_from(["yunzii-b75-tui", cmd, "f", flag, "1.5"]).is_err(),
+                    "{cmd} {flag} 1.5"
+                );
+            }
+            for switch in ["--grayscale", "--sharpen", "--blur"] {
+                assert!(
+                    Cli::try_parse_from(["yunzii-b75-tui", cmd, "f", switch]).is_ok(),
+                    "{cmd} {switch}"
+                );
+            }
+        }
+    }
+
+    /// The parsed values reach the command, and absent means zero rather than
+    /// some default of its own.
+    #[test]
+    fn absent_adjustment_flags_mean_no_adjustment() {
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "set-picture", "p.png"]).unwrap();
+        let Commands::SetPicture {
+            brightness,
+            chroma,
+            saturation,
+            grayscale,
+            sharpen,
+            blur,
+            ..
+        } = cli.command.unwrap()
+        else {
+            panic!("expected SetPicture");
+        };
+        assert_eq!((brightness, chroma, saturation), (None, None, None));
+        assert!(!grayscale && !sharpen && !blur);
+
+        let cli = Cli::try_parse_from([
+            "yunzii-b75-tui",
+            "set-gif",
+            "a.gif",
+            "--brightness",
+            "-0.25",
+            "--sharpen",
+        ])
+        .unwrap();
+        let Commands::SetGif {
+            brightness,
+            sharpen,
+            blur,
+            ..
+        } = cli.command.unwrap()
+        else {
+            panic!("expected SetGif");
+        };
+        assert_eq!(brightness, Some(-0.25));
+        assert!(sharpen);
+        assert!(!blur);
+    }
+
     #[test]
     fn parses_set_time() {
         let cli = Cli::try_parse_from(["yunzii-b75-tui", "set-time"]).unwrap();

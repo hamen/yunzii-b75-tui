@@ -858,7 +858,10 @@ fn adjust_row(p: &mut Pending, row: Row, up: bool) -> bool {
             *field = next;
             changed
         }
-        Row::Grayscale | Row::Sharpen | Row::Blur => toggle_row(p, row),
+        // Arrows do nothing to a switch. `space` is the key for that, and
+        // having both would mean the same row answered to three keys with two
+        // meanings between them.
+        Row::Grayscale | Row::Sharpen | Row::Blur => false,
     }
 }
 
@@ -1883,6 +1886,27 @@ mod tests {
                 }
             }
             other => panic!("got {other:?}"),
+        }
+    }
+
+    /// Arrows are for values; `space` is for switches.
+    #[test]
+    fn arrows_do_not_toggle_the_boolean_rows() {
+        for steps in [4usize, 5, 6] {
+            let mut a = app_ready();
+            a.screen = Screen::Confirm(Box::new(gif_pending()));
+            for _ in 0..steps {
+                a.on_key(Key::Down);
+            }
+            a.on_key(Key::Right);
+            a.on_key(Key::Left);
+            let Screen::Confirm(p) = &a.screen else {
+                unreachable!()
+            };
+            assert!(
+                p.adjustments().is_identity(),
+                "row {steps} must ignore the arrows"
+            );
         }
     }
 }
