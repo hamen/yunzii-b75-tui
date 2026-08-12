@@ -351,6 +351,31 @@ const built = [];
   built.push([name, n, 'no delay -> as fast as possible']);
 }
 
+// 8. Eighteen frames, so the "long pause every sixteenth frame" rule has a
+//    boundary to be tested against. Two frames can only show index 0; this one
+//    shows that index 16 pauses and 1..15 and 17 do not. Tiny canvas: every
+//    frame is stretched to the panel anyway, so the source size is irrelevant
+//    to the upload and only affects how long this file takes to decode.
+{
+  const W = 8;
+  const H = 8;
+  const frames = [];
+  for (let i = 0; i < 18; i++) {
+    frames.push({
+      left: 0,
+      top: 0,
+      width: W,
+      height: H,
+      indices: solid(W, H, (i % 3) + 1),
+      delayCs: 10,
+      disposal: 1,
+    });
+  }
+  const name = 'test-anim-18frames.gif';
+  const n = writeGif(path.join(FIX, name), { width: W, height: H, palette: PALETTE, frames });
+  built.push([name, n, '18 frames -> crosses the every-16th pause boundary']);
+}
+
 for (const [name, size, why] of built) {
   console.log(`  wrote fixtures/${name}  (${size} bytes) -- ${why}`);
 }

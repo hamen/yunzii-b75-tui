@@ -1,4 +1,5 @@
 mod device;
+mod exec;
 mod protocol;
 mod time;
 
@@ -701,10 +702,41 @@ fn run_set_gif(
     dev.drain()
         .map_err(|e| AppError::Device(e.with_reconnect_hint(&dev_path)))?;
 
+    send_gif_frames(
+        &dev,
+        &exec::SystemClock,
+        &dev_path,
+        &gif.frames,
+        rate,
+        &mut |i, of| println!("  frame {}/{of}", i + 1),
+    )?;
+
+    println!(
+        "sent successfully. The animation should now be playing on the keyboard's TFT screen."
+    );
+    Ok(())
+}
+
+/// The GIF upload choreography: reports **and** the pauses between them.
+///
+/// Behind `Transport` and `Clock` so a test can watch where the pauses fall --
+/// see `exec.rs` for why that is not already covered. The body is the code that
+/// used to sit inline in `run_set_gif`, in the same order, so a reviewer can
+/// diff it line for line.
+fn send_gif_frames(
+    dev: &dyn exec::Transport,
+    clock: &dyn exec::Clock,
+    dev_path: &Path,
+    frames: &[Vec<u8>],
+    rate: u8,
+    on_frame: &mut dyn FnMut(usize, usize),
+) -> Result<(), AppError> {
+    let frame_count = frames.len();
+
     // Deliberately NOT set-picture's message: nothing shows that clear-picture
     // clears a half-written GIF, and there is no clear-gif command yet.
     let upload_failed = |e: DeviceError| {
-        AppError::Device(e.with_reconnect_hint(&dev_path).with_note(
+        AppError::Device(e.with_reconnect_hint(dev_path).with_note(
             "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it \
              (clear-picture is not known to clear a GIF)",
         ))
@@ -713,13 +745,13 @@ fn run_set_gif(
         dev.send_sequence(ReportIdForm::LeadingZeroOnWrite, reports)
             .map_err(upload_failed)
     };
-    let sleep = |ms: u64| std::thread::sleep(std::time::Duration::from_millis(ms));
+    let sleep = |ms: u64| clock.sleep(std::time::Duration::from_millis(ms));
 
     let mode = protocol::GIF_MODE_SAVE_TO_DEVICE;
     send(&protocol::build_gif_session_open(mode))?;
     sleep(protocol::GIF_SESSION_OPEN_DELAY_MS);
 
-    for (i, pixels) in gif.frames.iter().enumerate() {
+    for (i, pixels) in frames.iter().enumerate() {
         send(&[protocol::build_gif_frame_header(mode, i as u8)])?;
         sleep(if i % protocol::GIF_SLOW_DELAY_EVERY == 0 {
             protocol::GIF_FRAME_HEADER_SLOW_DELAY_MS
@@ -731,7 +763,7 @@ fn run_set_gif(
             send(&block)?;
             sleep(protocol::GIF_BLOCK_DELAY_MS);
         }
-        println!("  frame {}/{frame_count}", i + 1);
+        on_frame(i, frame_count);
     }
 
     // Sent one at a time: the vendor sleeps 30 ms BETWEEN the two close
@@ -743,10 +775,6 @@ fn run_set_gif(
     }
     sleep(protocol::GIF_PRE_FINISH_DELAY_MS);
     send(&[protocol::build_finish()])?;
-
-    println!(
-        "sent successfully. The animation should now be playing on the keyboard's TFT screen."
-    );
     Ok(())
 }
 
@@ -782,25 +810,47 @@ fn run_set_picture(path: &Path) -> Result<(), AppError> {
     // An interrupted upload leaves a half-written frame on the panel, so say
     // so plainly rather than only reporting the underlying I/O error: 552
     // writes, each waiting for an ACK, is a long enough window to matter.
+    send_picture_reports(&dev, &exec::SystemClock, &dev_path, &start, &body)?;
+
+    println!("sent successfully. The picture should now be on the keyboard's TFT screen.");
+    Ok(())
+}
+
+/// The picture upload choreography: two sends with a mandatory 300 ms between.
+///
+/// Same reasoning as `send_gif_frames` -- behind `Transport` and `Clock` so the
+/// pause is observable. Body unchanged from what was inline in
+/// `run_set_picture`.
+fn send_picture_reports(
+    dev: &dyn exec::Transport,
+    clock: &dyn exec::Clock,
+    dev_path: &Path,
+    start: &[u8; 64],
+    body: &[[u8; 64]],
+) -> Result<(), AppError> {
+    // An interrupted upload leaves a half-written frame on the panel, so say
+    // so plainly rather than only reporting the underlying I/O error: 552
+    // writes, each waiting for an ACK, is a long enough window to matter.
     let upload_failed = |e: DeviceError| {
-        AppError::Device(e.with_reconnect_hint(&dev_path).with_note(
+        AppError::Device(e.with_reconnect_hint(dev_path).with_note(
             "the picture may be partially written -- re-run set-picture, or run clear-picture",
         ))
     };
 
-    dev.send_sequence(ReportIdForm::LeadingZeroOnWrite, &[start])
-        .map_err(upload_failed)?;
+    dev.send_sequence(
+        ReportIdForm::LeadingZeroOnWrite,
+        std::slice::from_ref(start),
+    )
+    .map_err(upload_failed)?;
 
     // The vendor pauses here, between the start report and declare-size --
     // not before the bulk data. See protocol::START_TO_DECLARE_DELAY_MS.
-    std::thread::sleep(std::time::Duration::from_millis(
+    clock.sleep(std::time::Duration::from_millis(
         protocol::START_TO_DECLARE_DELAY_MS,
     ));
 
-    dev.send_sequence(ReportIdForm::LeadingZeroOnWrite, &body)
+    dev.send_sequence(ReportIdForm::LeadingZeroOnWrite, body)
         .map_err(upload_failed)?;
-
-    println!("sent successfully. The picture should now be on the keyboard's TFT screen.");
     Ok(())
 }
 
@@ -1072,6 +1122,163 @@ mod cli_tests {
         let pixels = load_and_encode_picture(&path).unwrap();
         assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
         assert_eq!(&pixels[0..2], &[0xf8, 0x00]);
+    }
+
+    // --- Milestone 5: the upload choreography ---
+    //
+    // These are the only tests in the repo that can see a pause. The capture
+    // fixtures pin every byte and none of the timing, so a refactor that
+    // dropped the 300 ms before a picture body, or moved the 3-second pause to
+    // the wrong frame, would pass everything else in `bin/ci`.
+
+    use crate::exec::{Recorder, Step};
+
+    /// The picture upload, end to end: one report, the 300 ms the vendor
+    /// requires, then the 551-report body. Nothing else, in that order.
+    #[test]
+    fn picture_upload_choreography() {
+        let pixels = load_and_encode_picture(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let start = protocol::build_picture_upload_start();
+        let body = protocol::build_picture_upload_body(&pixels);
+
+        let rec = Recorder::new();
+        send_picture_reports(&rec, &rec, Path::new("/dev/null"), &start, &body).unwrap();
+
+        assert_eq!(
+            rec.steps(),
+            vec![
+                Step::Reports(1),                                 // start
+                Step::Slept(protocol::START_TO_DECLARE_DELAY_MS), // 300 ms
+                Step::Reports(body.len()),                        // declare + pixels + finish
+            ],
+            "the picture pause must sit between the start report and the body"
+        );
+        assert_eq!(
+            rec.report_count(),
+            protocol::picture_upload_report_count(),
+            "552 reports, matching fixtures/picture-upload.json"
+        );
+    }
+
+    /// The GIF upload for a 2-frame animation, pause by pause.
+    ///
+    /// Written out in full rather than summarised: this sequence is the thing
+    /// being protected, and a reader should be able to check it against
+    /// PROTOCOL.md without running anything.
+    #[test]
+    fn gif_upload_choreography() {
+        let gif = load_gif_frames(Path::new("fixtures/test-anim-2frames.gif"), None).unwrap();
+        assert_eq!(gif.frames.len(), 2);
+
+        let rec = Recorder::new();
+        send_gif_frames(
+            &rec,
+            &rec,
+            Path::new("/dev/null"),
+            &gif.frames,
+            10,
+            &mut |_, _| {},
+        )
+        .unwrap();
+
+        let blocks = protocol::GIF_BLOCKS_PER_FRAME;
+        let per_block = protocol::GIF_PACKETS_PER_BLOCK;
+
+        let mut want = vec![
+            // Both session-open reports go out together, then ONE pause.
+            // There is no gap between report 18 and report 19.
+            Step::Reports(2),
+            Step::Slept(protocol::GIF_SESSION_OPEN_DELAY_MS),
+        ];
+        for i in 0..2 {
+            want.push(Step::Reports(1)); // frame header
+            want.push(Step::Slept(if i % protocol::GIF_SLOW_DELAY_EVERY == 0 {
+                protocol::GIF_FRAME_HEADER_SLOW_DELAY_MS
+            } else {
+                protocol::GIF_FRAME_HEADER_DELAY_MS
+            }));
+            // Declare-size and the first block run together: there is no
+            // pause between them, so the trace shows them as one run of
+            // 1 + 19 reports. Worth seeing rather than hiding -- it is the
+            // only place in the upload where two different kinds of report
+            // are sent back to back.
+            want.push(Step::Reports(1 + per_block));
+            want.push(Step::Slept(protocol::GIF_BLOCK_DELAY_MS));
+            for _ in 1..blocks {
+                want.push(Step::Reports(per_block));
+                want.push(Step::Slept(protocol::GIF_BLOCK_DELAY_MS));
+            }
+        }
+        // Close reports one at a time, so the gap BETWEEN them survives.
+        want.push(Step::Reports(1));
+        want.push(Step::Slept(protocol::GIF_SESSION_CLOSE_DELAY_MS));
+        want.push(Step::Reports(1));
+        want.push(Step::Slept(protocol::GIF_SESSION_CLOSE_DELAY_MS));
+        want.push(Step::Slept(protocol::GIF_PRE_FINISH_DELAY_MS));
+        want.push(Step::Reports(1)); // finish
+
+        assert_eq!(rec.steps(), want);
+        assert_eq!(
+            rec.report_count(),
+            protocol::gif_upload_report_count(2),
+            "1149 reports for 2 frames, matching fixtures/gif-upload.json"
+        );
+    }
+
+    /// The three-second pause lands on frames 0 and 16 and nowhere else.
+    ///
+    /// Two frames cannot show this: index 0 is the only slow one they contain,
+    /// so `i % 16 == 0` and `i == 0` are indistinguishable. Eighteen frames
+    /// tell them apart, which is the whole reason that fixture exists.
+    #[test]
+    fn the_long_pause_falls_on_every_sixteenth_frame_only() {
+        let gif = load_gif_frames(Path::new("fixtures/test-anim-18frames.gif"), None).unwrap();
+        assert_eq!(gif.frames.len(), 18);
+
+        let rec = Recorder::new();
+        send_gif_frames(
+            &rec,
+            &rec,
+            Path::new("/dev/null"),
+            &gif.frames,
+            10,
+            &mut |_, _| {},
+        )
+        .unwrap();
+
+        // Header pauses are the only ones that are either 3000 or 30 and sit
+        // immediately after a single-report step, so pick them out by walking
+        // the trace rather than by filtering on duration -- block pauses are
+        // also 30 ms.
+        let steps = rec.steps();
+        let declare_plus_first_block = 1 + protocol::GIF_PACKETS_PER_BLOCK;
+        let mut header_pauses = Vec::new();
+        for w in steps.windows(3) {
+            // A frame header is the only lone report followed by a pause and
+            // then the declare-size-plus-first-block run.
+            if let [Step::Reports(1), Step::Slept(ms), Step::Reports(n)] = w
+                && *n == declare_plus_first_block
+            {
+                header_pauses.push(*ms);
+            }
+        }
+
+        assert_eq!(
+            header_pauses.len(),
+            18,
+            "one header pause per frame, got {header_pauses:?}"
+        );
+        let slow: Vec<usize> = header_pauses
+            .iter()
+            .enumerate()
+            .filter(|(_, ms)| **ms == protocol::GIF_FRAME_HEADER_SLOW_DELAY_MS)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            slow,
+            vec![0, 16],
+            "the 3 s pause belongs to frames 0 and 16 only"
+        );
     }
 
     // --- Milestone 4: set-gif ---
