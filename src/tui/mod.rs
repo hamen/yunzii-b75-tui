@@ -11,7 +11,7 @@ pub mod term;
 pub mod ui;
 pub mod worker;
 
-use app::{App, Key, Update};
+use app::{App, Key};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::io;
 use std::sync::mpsc;
@@ -92,11 +92,12 @@ fn event_loop() -> io::Result<Option<String>> {
                 Ok(u) => app.on_update(u),
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    // Both senders are gone: the worker died. Say so rather
-                    // than waiting for an update that will never arrive.
-                    app.on_update(Update::Finished(Err(
-                        "the background worker stopped unexpectedly".into(),
-                    )));
+                    // Every sender is gone. In practice the discovery thread
+                    // holds one for the life of the program, so this is a
+                    // backstop rather than the main way a dead worker is
+                    // noticed -- that is `guarded()` in worker.rs, which turns
+                    // a panicking job into a message and keeps the thread.
+                    app.final_message = Some("the background threads stopped unexpectedly.".into());
                     app.should_quit = true;
                     break;
                 }
@@ -122,6 +123,9 @@ fn event_loop() -> io::Result<Option<String>> {
             && let Some(job) = app.on_key(key)
             && job_tx.send(job).is_err()
         {
+            // The worker is gone. Leaving silently would look like the key did
+            // nothing; say so on the normal screen instead.
+            app.final_message = Some("the background worker stopped, so nothing was sent.".into());
             break;
         }
     }

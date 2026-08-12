@@ -229,10 +229,6 @@ fn preview_pane(f: &mut Frame, area: Rect, pending: &Pending) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let source = match pending {
-        Pending::Picture { preview, .. } | Pending::Gif { preview, .. } => preview,
-    };
-
     let Some((w, h)) = preview::fit(inner.width as usize, inner.height as usize) else {
         f.render_widget(
             Paragraph::new("(pane too small for a preview)")
@@ -242,16 +238,15 @@ fn preview_pane(f: &mut Frame, area: Rect, pending: &Pending) {
         return;
     };
 
-    // Resample the stored preview down to what fits.
-    let sw = source.width().max(1);
-    let sh = source.height().max(1);
+    // Rendered once, at the size the pane actually has. Rendering large and
+    // squeezing the cells afterwards resamples twice and throws away detail
+    // for nothing.
+    let source = preview::render(pending.frame(), w, h);
     let lines: Vec<Line> = (0..h)
         .map(|y| {
-            let sy = y * sh / h;
             let spans: Vec<Span> = (0..w)
                 .map(|x| {
-                    let sx = x * sw / w;
-                    let (upper, lower) = source.rows[sy.min(sh - 1)][sx.min(sw - 1)];
+                    let (upper, lower) = source.rows[y][x];
                     Span::styled(
                         "▀",
                         Style::default()
@@ -353,7 +348,6 @@ mod tests {
     use super::*;
     use crate::plan;
     use crate::tui::app::{DeviceState, Key, Update};
-    use crate::tui::preview;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::path::{Path, PathBuf};
@@ -461,7 +455,6 @@ mod tests {
         let mut a = app_ready();
         a.screen = Screen::Confirm(Box::new(Pending::Picture {
             path: PathBuf::from("fixtures/test-quadrants.png"),
-            preview: preview::render(&plan.pixels, 80, 24),
             plan,
         }));
 
@@ -498,7 +491,6 @@ mod tests {
             let mut a = app_ready();
             a.screen = Screen::Confirm(Box::new(Pending::Gif {
                 path: PathBuf::from("x.gif"),
-                preview: preview::render(&plan.frames[0], 40, 12),
                 plan,
                 rate_override: Some(24),
             }));
@@ -535,7 +527,6 @@ mod tests {
         let mut a = app_ready();
         a.screen = Screen::Confirm(Box::new(Pending::Picture {
             path: PathBuf::from("p.png"),
-            preview: preview::render(&plan.pixels, 40, 12),
             plan,
         }));
 
@@ -562,5 +553,64 @@ mod tests {
         // than draw a smear.
         assert!(render_at(&a, 90, 13).contains('▀'), "four rows is enough");
         assert!(render_at(&a, 90, 12).contains('▀'), "and so is a short one");
+    }
+
+    /// Choosing a rate by hand removes the planner's "using 30 fps instead".
+    ///
+    /// The uploaded bytes were always right; the pane was not. Showing a
+    /// fallback warning beside a rate the user just set is the interface
+    /// lying about what it is going to do.
+    #[test]
+    fn a_chosen_rate_removes_the_superseded_warning() {
+        // A GIF whose delays ask for 100 fps, so the planner warns.
+        let plan = plan::plan_gif_upload(Path::new("fixtures/test-anim-too-fast.gif"), None, None)
+            .unwrap();
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.kind == crate::plan::NoteKind::RateFallback),
+            "the fixture must produce the warning this test is about"
+        );
+
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(Pending::Gif {
+            path: PathBuf::from("fast.gif"),
+            plan,
+            rate_override: None,
+        }));
+        let before = render_at(&a, 110, 30);
+        assert!(before.contains("100"), "the warning is shown by default");
+
+        // Now the user picks a rate.
+        a.on_key(Key::Right);
+        let after = render_at(&a, 110, 30);
+        assert!(
+            !after.contains("100"),
+            "the superseded warning must go:\n{after}"
+        );
+        assert!(
+            after.contains("(chosen)"),
+            "and the rate is marked:\n{after}"
+        );
+    }
+
+    /// The rate hint belongs only to GIFs.
+    #[test]
+    fn a_picture_confirm_does_not_offer_a_rate() {
+        let plan = plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(Pending::Picture {
+            path: PathBuf::from("p.png"),
+            plan,
+        }));
+        let out = render_at(&a, 110, 30);
+        assert!(
+            out.contains("Enter to upload") || out.contains("⏎ upload"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("→ rate"),
+            "pictures have no frame rate:\n{out}"
+        );
     }
 }

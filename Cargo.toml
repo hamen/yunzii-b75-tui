@@ -14,7 +14,13 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 clap = { version = "4.6.6", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
 nix = { version = "0.31.3", features = ["poll", "fs"] }
-ratatui = "0.30.2"
+# Only the crossterm backend. The default set also pulls termwiz and termion,
+# which this never uses -- two more terminal libraries compiled in to be
+# ignored. `underline-color` is kept because the default theme expects it.
+ratatui = { version = "0.30", default-features = false, features = [
+    "crossterm",
+    "underline-color",
+] }
 
 [dev-dependencies]
 serde_json = "1.0.151"

@@ -27,12 +27,13 @@ pub struct Preview {
     pub rows: Vec<Vec<(Rgb, Rgb)>>,
 }
 
+#[cfg(test)]
 impl Preview {
-    pub fn width(&self) -> usize {
+    fn width(&self) -> usize {
         self.rows.first().map_or(0, |r| r.len())
     }
 
-    pub fn height(&self) -> usize {
+    fn height(&self) -> usize {
         self.rows.len()
     }
 }

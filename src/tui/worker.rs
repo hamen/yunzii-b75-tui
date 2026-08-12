@@ -16,7 +16,6 @@ use crate::plan;
 use crate::protocol;
 use crate::time;
 use crate::tui::app::{DeviceState, Job, Pending, Update};
-use crate::tui::preview;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -24,12 +23,6 @@ use std::time::Duration;
 
 /// How often to look for the keyboard while it is not there.
 const RESCAN: Duration = Duration::from_secs(2);
-
-/// Cells reserved for the preview when one is built. Generous: the pane is
-/// re-rendered from the plan's own frame anyway, and this only sets how much
-/// detail is kept.
-const PREVIEW_W: usize = 160;
-const PREVIEW_H: usize = 48;
 
 /// Looks for the keyboard, and *opens* it, because looking is not enough.
 ///
@@ -132,9 +125,16 @@ fn run_job(
     ready: &Arc<AtomicBool>,
 ) -> Option<Result<String, String>> {
     match job {
-        Job::Preview { path, for_gif } => {
+        Job::Preview {
+            path,
+            for_gif,
+            generation,
+        } => {
             let built = build_preview(&path, for_gif);
-            let _ = tx.send(Update::Preview(Box::new(built)));
+            let _ = tx.send(Update::Preview {
+                generation,
+                result: Box::new(built),
+            });
             None
         }
         Job::SetTime => Some(simple(tx, ready, "set the clock", |dev, notes| {
@@ -198,7 +198,9 @@ fn build_preview(path: &std::path::Path, for_gif: bool) -> Result<Pending, Strin
         // put that conversation yet. Refusing with a pointer is honest.
         let plan = plan::plan_gif_upload(path, None, None).map_err(|e| {
             let mut m = e.to_string();
-            if m.contains("frames") && m.contains("160") {
+            // Matched against a constant the planner owns, not against its
+            // prose: a reworded message must not silently drop the guidance.
+            if m.contains(plan::TOO_MANY_FRAMES) {
                 m.push_str(
                     "\n(the interface cannot sample frames yet -- use the command line: \
                      `yunzii-b75-tui set-gif <file> --max-frames 160`)",
@@ -206,10 +208,8 @@ fn build_preview(path: &std::path::Path, for_gif: bool) -> Result<Pending, Strin
             }
             m
         })?;
-        let first = plan.frames.first().cloned().unwrap_or_default();
         Ok(Pending::Gif {
             path: path.to_path_buf(),
-            preview: preview::render(&first, PREVIEW_W, PREVIEW_H),
             plan,
             rate_override: None,
         })
@@ -217,7 +217,6 @@ fn build_preview(path: &std::path::Path, for_gif: bool) -> Result<Pending, Strin
         let plan = plan::plan_picture_upload(path).map_err(|e| e.to_string())?;
         Ok(Pending::Picture {
             path: path.to_path_buf(),
-            preview: preview::render(&plan.pixels, PREVIEW_W, PREVIEW_H),
             plan,
         })
     }
@@ -230,14 +229,14 @@ fn simple(
     done_msg: &str,
     body: impl FnOnce(&Device, &mut dyn FnMut(String)) -> Result<(), DeviceError>,
 ) -> Result<String, String> {
-    let (path, dev) = open(ready)?;
+    let (path, dev) = open_reporting(tx, ready)?;
     let mut notes = |m: String| {
         let _ = tx.send(Update::Note(m));
     };
     body(&dev, &mut notes)
         .map(|()| done_msg.to_string())
         .map_err(|e| {
-            ready.store(false, Ordering::Relaxed);
+            lost(tx, ready);
             e.with_reconnect_hint(&path).to_string()
         })
 }
@@ -253,7 +252,7 @@ fn upload(
     body: impl FnOnce(&mut ExecCtx) -> Result<(), DeviceError>,
     partial_note: &str,
 ) -> Result<String, String> {
-    let (path, dev) = open(ready)?;
+    let (path, dev) = open_reporting(tx, ready)?;
 
     let cancel = Arc::new(AtomicBool::new(false));
     let _ = tx.send(Update::Started {
@@ -303,17 +302,31 @@ fn upload(
     }
 }
 
-fn open(ready: &Arc<AtomicBool>) -> Result<(std::path::PathBuf, Device), String> {
+/// Marks the device gone and tells the interface at once.
+///
+/// Clearing `ready` alone only restarts discovery; without the update the
+/// header keeps its green dot, and its actions keep looking available, until
+/// the next probe two seconds later. Two seconds of a UI claiming a keyboard
+/// that just failed is two seconds of it lying.
+fn lost(tx: &Sender<Update>, ready: &Arc<AtomicBool>) {
+    ready.store(false, Ordering::Relaxed);
+    let _ = tx.send(Update::Device(DeviceState::NotFound));
+}
+
+fn open_reporting(
+    tx: &Sender<Update>,
+    ready: &Arc<AtomicBool>,
+) -> Result<(std::path::PathBuf, Device), String> {
     let path = device::find_device().map_err(|e| {
-        ready.store(false, Ordering::Relaxed);
+        lost(tx, ready);
         e.to_string()
     })?;
     let dev = Device::open(&path).map_err(|e| {
-        ready.store(false, Ordering::Relaxed);
+        lost(tx, ready);
         e.to_string()
     })?;
     dev.drain().map_err(|e| {
-        ready.store(false, Ordering::Relaxed);
+        lost(tx, ready);
         e.with_reconnect_hint(&path).to_string()
     })?;
     Ok((path, dev))
@@ -368,6 +381,7 @@ mod tests {
             .send(Job::Preview {
                 path: std::path::PathBuf::from("/nonexistent.gif"),
                 for_gif: true,
+                generation: 1,
             })
             .unwrap();
 
@@ -375,7 +389,10 @@ mod tests {
             .recv_timeout(Duration::from_secs(10))
             .expect("the worker must answer");
         match first {
-            Update::Preview(r) => assert!(r.is_err(), "a missing file cannot preview"),
+            Update::Preview { generation, result } => {
+                assert_eq!(generation, 1, "the reply carries the request it answers");
+                assert!(result.is_err(), "a missing file cannot preview");
+            }
             other => panic!("expected a preview reply, got {other:?}"),
         }
 
@@ -383,12 +400,13 @@ mod tests {
             .send(Job::Preview {
                 path: std::path::PathBuf::from("/also-missing.png"),
                 for_gif: false,
+                generation: 2,
             })
             .unwrap();
         let second = rx
             .recv_timeout(Duration::from_secs(10))
             .expect("the worker is still alive after a failure");
-        assert!(matches!(second, Update::Preview(_)));
+        assert!(matches!(second, Update::Preview { generation: 2, .. }));
 
         // `busy` is cleared just AFTER the reply is sent, so this waits for it
         // rather than sampling once -- a flaky test is worse than no test.
@@ -409,9 +427,9 @@ mod tests {
         let built = build_preview(std::path::Path::new("fixtures/test-anim-2frames.gif"), true)
             .expect("a valid GIF");
         match built {
-            Pending::Gif { plan, preview, .. } => {
+            Pending::Gif { plan, .. } => {
                 assert_eq!(plan.frames.len(), 2);
-                assert!(preview.height() > 0);
+                assert_eq!(plan.frames[0].len(), crate::protocol::PICTURE_BYTES);
             }
             other => panic!("expected a GIF, got {other:?}"),
         }

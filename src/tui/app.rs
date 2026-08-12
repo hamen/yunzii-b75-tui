@@ -8,7 +8,6 @@
 
 use crate::plan::{GifPlan, PicturePlan};
 use crate::protocol::Page;
-use crate::tui::preview::Preview;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -125,16 +124,29 @@ pub enum Pending {
     Picture {
         path: PathBuf,
         plan: PicturePlan,
-        preview: Preview,
     },
     Gif {
         path: PathBuf,
         plan: GifPlan,
-        preview: Preview,
         /// `None` means "as the file asks"; `Some` is the equivalent of
         /// passing `--fps`, and suppresses the fallback note the same way.
         rate_override: Option<u8>,
     },
+}
+
+impl Pending {
+    /// The panel frame this will send, for the preview to draw.
+    ///
+    /// Kept as pixels rather than a pre-rendered `Preview`: the pane knows how
+    /// much room it has, and rendering once at that size beats rendering large
+    /// and squeezing the cells afterwards, which resamples twice and loses
+    /// detail for no reason.
+    pub fn frame(&self) -> &[u8] {
+        match self {
+            Pending::Picture { plan, .. } => &plan.pixels,
+            Pending::Gif { plan, .. } => plan.frames.first().map_or(&[][..], |f| &f[..]),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -175,7 +187,14 @@ impl Running {
 /// A job for the worker thread.
 #[derive(Debug)]
 pub enum Job {
-    Preview { path: PathBuf, for_gif: bool },
+    Preview {
+        path: PathBuf,
+        for_gif: bool,
+        /// Which request this is. A decode takes a moment; if the user leaves
+        /// the browser meanwhile, the answer must be dropped rather than
+        /// yanking them into a confirm screen they already dismissed.
+        generation: u64,
+    },
     SetTime,
     SwitchPage(Page),
     ClearPicture,
@@ -187,7 +206,10 @@ pub enum Job {
 #[derive(Debug)]
 pub enum Update {
     Device(DeviceState),
-    Preview(Box<Result<Pending, String>>),
+    Preview {
+        generation: u64,
+        result: Box<Result<Pending, String>>,
+    },
     Started {
         label: String,
         total: usize,
@@ -242,6 +264,9 @@ pub struct App {
     /// A partial-write warning shown inside the alternate screen is a warning
     /// nobody reads: the screen is torn down a moment later.
     pub final_message: Option<String>,
+    /// Bumped for every preview request, and again whenever the browser is
+    /// left, so a reply that arrives too late can be recognised.
+    pub preview_generation: u64,
     /// A job has been handed to the worker and has not reported back.
     ///
     /// The queue holds one. Refusing is better than queueing: a second
@@ -263,6 +288,7 @@ impl App {
             quitting: false,
             should_quit: false,
             final_message: None,
+            preview_generation: 0,
             job_pending: false,
         }
     }
@@ -416,6 +442,9 @@ impl App {
 
         match key {
             Key::Esc | Key::Char('q') => {
+                // Anything still decoding is no longer wanted.
+                self.preview_generation += 1;
+                self.job_pending = false;
                 self.screen = Screen::Menu;
                 None
             }
@@ -465,9 +494,11 @@ impl App {
                     None
                 } else {
                     self.note(format!("reading {}…", entry.name));
+                    self.preview_generation += 1;
                     Some(Job::Preview {
                         path: entry.path,
                         for_gif,
+                        generation: self.preview_generation,
                     })
                 }
             }
@@ -554,7 +585,12 @@ impl App {
                 }
                 self.device = d;
             }
-            Update::Preview(result) => {
+            Update::Preview { generation, result } => {
+                // A reply for a request that has been superseded or abandoned.
+                // Applying it would drag the user into a screen they left.
+                if generation != self.preview_generation {
+                    return;
+                }
                 self.job_pending = false;
                 match *result {
                     Ok(pending) => self.screen = Screen::Confirm(Box::new(pending)),
@@ -687,7 +723,6 @@ mod tests {
             plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), None, None).unwrap();
         Pending::Gif {
             path: PathBuf::from("fixtures/test-anim-2frames.gif"),
-            preview: crate::tui::preview::render(&plan.frames[0], 8, 4),
             plan,
             rate_override: None,
         }
@@ -777,7 +812,10 @@ mod tests {
             "the first Enter previews, it does not upload: {job:?}"
         );
 
-        a.on_update(Update::Preview(Box::new(Ok(gif_pending()))));
+        a.on_update(Update::Preview {
+            generation: a.preview_generation,
+            result: Box::new(Ok(gif_pending())),
+        });
         assert!(matches!(a.screen, Screen::Confirm(_)));
 
         let job = a.on_key(Key::Enter).expect("now it uploads");
@@ -802,9 +840,10 @@ mod tests {
             selected: 0,
             error: None,
         };
-        a.on_update(Update::Preview(Box::new(Err(
-            "could not use x.png as an animation".into(),
-        ))));
+        a.on_update(Update::Preview {
+            generation: a.preview_generation,
+            result: Box::new(Err("could not use x.png as an animation".into())),
+        });
         assert!(
             matches!(a.screen, Screen::Browse { .. }),
             "pick another one"
@@ -1204,7 +1243,10 @@ mod tests {
             selected: 0,
             error: None,
         };
-        a.on_update(Update::Preview(Box::new(Err("no such file".into()))));
+        a.on_update(Update::Preview {
+            generation: a.preview_generation,
+            result: Box::new(Err("no such file".into())),
+        });
 
         match &a.screen {
             Screen::Browse { entries, .. } => {
@@ -1216,5 +1258,80 @@ mod tests {
             }
             other => panic!("got {other:?}"),
         }
+    }
+
+    /// A preview that arrives after the user walked away is dropped.
+    ///
+    /// Decoding a long GIF takes a moment. Pressing Esc during it used to be
+    /// ignored: the reply still forced the confirm screen, dragging the user
+    /// into something they had already dismissed.
+    #[test]
+    fn a_preview_that_arrives_too_late_is_ignored() {
+        let mut a = app_ready();
+        a.screen = Screen::Browse {
+            for_gif: true,
+            dir: PathBuf::from("fixtures"),
+            entries: vec![Entry {
+                name: "test-anim-2frames.gif".into(),
+                path: PathBuf::from("fixtures/test-anim-2frames.gif"),
+                is_dir: false,
+            }],
+            selected: 0,
+            error: None,
+        };
+        let job = a.on_key(Key::Enter).expect("a preview job");
+        let Job::Preview { generation, .. } = job else {
+            panic!("expected a preview")
+        };
+
+        // The user gives up waiting and leaves.
+        a.on_key(Key::Esc);
+        assert!(matches!(a.screen, Screen::Menu));
+
+        // The worker answers anyway.
+        a.on_update(Update::Preview {
+            generation,
+            result: Box::new(Ok(gif_pending())),
+        });
+        assert!(
+            matches!(a.screen, Screen::Menu),
+            "a dismissed preview must not reappear"
+        );
+    }
+
+    /// And a reply for the request actually in flight still lands.
+    #[test]
+    fn the_current_preview_still_arrives() {
+        let mut a = app_ready();
+        a.screen = Screen::Browse {
+            for_gif: true,
+            dir: PathBuf::from("fixtures"),
+            entries: vec![Entry {
+                name: "test-anim-2frames.gif".into(),
+                path: PathBuf::from("fixtures/test-anim-2frames.gif"),
+                is_dir: false,
+            }],
+            selected: 0,
+            error: None,
+        };
+        let Some(Job::Preview { generation, .. }) = a.on_key(Key::Enter) else {
+            panic!("expected a preview")
+        };
+        a.on_update(Update::Preview {
+            generation,
+            result: Box::new(Ok(gif_pending())),
+        });
+        assert!(matches!(a.screen, Screen::Confirm(_)));
+    }
+
+    /// A device that fails mid-job stops looking available immediately.
+    #[test]
+    fn a_failed_job_takes_the_green_dot_away() {
+        let mut a = app_ready();
+        assert!(a.actions_enabled());
+        a.on_update(Update::Device(DeviceState::NotFound));
+        a.on_update(Update::Finished(Err("I/O error: broken pipe".into())));
+        assert!(!a.actions_enabled(), "no action may look available now");
+        assert!(!a.device.is_ready());
     }
 }

@@ -367,7 +367,7 @@ pub fn select_frame_indices(
         None => {
             if n > protocol::GIF_MAX_FRAMES {
                 return Err(format!(
-                    "it has {n} frames but the keyboard stores at most {}. \
+                    "it has {n} frames, {TOO_MANY_FRAMES} ({}). \
                      Re-run with --max-frames {} to upload a uniformly sampled subset, \
                      or shorten the GIF first.",
                     protocol::GIF_MAX_FRAMES,
@@ -505,6 +505,13 @@ pub fn plan_picture_upload(path: &Path) -> Result<PicturePlan, MediaError> {
         total_reports,
     })
 }
+
+/// The phrase a "too many frames" error is built from.
+///
+/// Public so a caller can recognise the case without matching on prose it does
+/// not own. The TUI adds its own guidance when it sees this, and a reworded
+/// message must not silently drop that.
+pub const TOO_MANY_FRAMES: &str = "more frames than the keyboard can store";
 
 /// Reads a GIF and decides everything about its upload: which frames, at what
 /// rate, and what the user needs to be told about both.
