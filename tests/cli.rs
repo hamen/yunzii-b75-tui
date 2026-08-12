@@ -190,6 +190,45 @@ fn a_dry_run_reports_the_plan_without_contacting_the_keyboard() {
     assert!(!o.contains("found device"), "got: {o}");
 }
 
+/// A second stream-split case, with a different note on stderr.
+///
+/// One case can pass by accident. Subsampling is a different note from a
+/// different branch of the planner, and it must land on stderr too, while its
+/// summary goes to stdout.
+#[test]
+fn the_subsampling_note_also_splits_correctly() {
+    let out = run(&[
+        "set-gif",
+        "fixtures/test-anim-18frames.gif",
+        "--fps",
+        "30",
+        "--max-frames",
+        "9",
+        "--dry-run",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    let o = stdout(&out);
+    let e = stderr(&out);
+
+    assert!(
+        e.contains("uploading 9 of 18 frames"),
+        "the subsampling warning belongs on stderr; got: {e}"
+    );
+    assert!(
+        e.contains("--fps 15"),
+        "and it suggests the rate that keeps the duration; got: {e}"
+    );
+    assert!(
+        o.contains("9 frame(s) at 30 fps"),
+        "the summary belongs on stdout; got: {o}"
+    );
+    assert!(
+        !o.contains("uploading 9 of 18"),
+        "the warning must not also be on stdout: {o}"
+    );
+}
+
 /// `--help` works without a device and names every shipped command.
 #[test]
 fn help_lists_the_commands() {

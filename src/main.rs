@@ -358,6 +358,14 @@ fn run_upload(
     body(&mut cx).map_err(|e| e.with_reconnect_hint(dev_path))
 }
 
+/// What a failed or cancelled GIF upload leaves on the keyboard.
+///
+/// Deliberately NOT set-picture's message: nothing shows that clear-picture
+/// clears a half-written GIF, and there is no clear-gif command yet. Named so
+/// the test asserts the same string the user sees.
+const GIF_PARTIAL_WRITE_NOTE: &str = "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it \
+     (clear-picture is not known to clear a GIF)";
+
 fn run_set_gif(
     path: &Path,
     fps: Option<u8>,
@@ -407,12 +415,7 @@ fn run_set_gif(
             }
         },
     )
-    .map_err(|e| {
-        AppError::Device(e.with_note(
-            "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it \
-             (clear-picture is not known to clear a GIF)",
-        ))
-    })?;
+    .map_err(|e| AppError::Device(e.with_note(GIF_PARTIAL_WRITE_NOTE)))?;
 
     println!(
         "sent successfully. The animation should now be playing on the keyboard's TFT screen."
@@ -533,6 +536,41 @@ mod cli_tests {
             !err.contains("frame(s) at"),
             "the summary must not be on stderr"
         );
+    }
+
+    /// A cancelled GIF upload reaches the user as a cancellation that says
+    /// what it left on the keyboard -- through the executor, not by calling
+    /// `with_note` in isolation.
+    #[test]
+    fn a_cancelled_gif_upload_tells_the_user_the_animation_is_partial() {
+        use std::sync::atomic::AtomicBool;
+
+        let plan =
+            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
+                .unwrap();
+        let cancel = AtomicBool::new(false);
+        let rec = exec::Recorder::cancelling_after(20, &cancel);
+        let clock_and_dev = &rec;
+        let mut emit = |_: exec::ExecEvent| {};
+        let mut cx = exec::ExecCtx {
+            dev: clock_and_dev,
+            cancel: &cancel,
+            clock: clock_and_dev,
+            emit: &mut emit,
+        };
+
+        // The same mapping run_set_gif applies to a failed upload.
+        let err = exec::execute_gif(&plan, &mut cx)
+            .map_err(|e| AppError::Device(e.with_note(GIF_PARTIAL_WRITE_NOTE)))
+            .expect_err("cancelled");
+
+        let msg = err.to_string();
+        assert!(msg.starts_with("cancelled"), "not a fault: {msg}");
+        assert!(
+            msg.contains("animation on the keyboard may be incomplete"),
+            "the user must be told what was left behind: {msg}"
+        );
+        assert!(msg.contains("re-run set-gif"), "and how to fix it: {msg}");
     }
 
     #[test]

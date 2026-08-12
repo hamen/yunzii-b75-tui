@@ -343,6 +343,9 @@ mod recorder {
         /// What `drain()` claims to have read. Non-zero stands in for a device
         /// that had stale reports queued.
         drain_returns: usize,
+        /// Diagnostics the transport hands back per report, standing in for
+        /// the `YUNZII_DEBUG` lines a real `Device` produces.
+        note_per_report: Option<String>,
     }
 
     impl<'a> Recorder<'a> {
@@ -352,6 +355,16 @@ mod recorder {
                 reports: RefCell::new(Vec::new()),
                 cancel_after: None,
                 drain_returns: 0,
+                note_per_report: None,
+            }
+        }
+
+        /// A transport that reports a diagnostic on every write, the way
+        /// `Device` does when `YUNZII_DEBUG` is set.
+        pub fn chatty(note: &str) -> Self {
+            Self {
+                note_per_report: Some(note.to_string()),
+                ..Self::new()
             }
         }
 
@@ -396,8 +409,11 @@ mod recorder {
             &self,
             _form: ReportIdForm,
             report: &[u8; 64],
-            _notes: &mut dyn FnMut(String),
+            notes: &mut dyn FnMut(String),
         ) -> Result<(), DeviceError> {
+            if let Some(n) = &self.note_per_report {
+                notes(n.clone());
+            }
             self.reports.borrow_mut().push(*report);
             {
                 let mut steps = self.steps.borrow_mut();
@@ -474,6 +490,14 @@ mod tests {
     // fixtures pin every byte and none of the timing, so a refactor that
     // dropped the 300 ms before a picture body, or moved the 3-second pause to
     // the wrong frame, would pass everything else in `bin/ci`.
+    //
+    // The durations below are written as LITERALS, deliberately, and must not
+    // be re-derived from `protocol::*`. An earlier version used the constants
+    // on both sides, so changing one from 3000 to 2000 changed the expectation
+    // with it and the test still passed -- review caught that. These numbers
+    // come from the vendor capture, they are what the firmware requires, and
+    // this is where they are stated independently of the code that uses them.
+    // Changing a delay should mean deliberately changing it here too.
 
     /// The picture upload, end to end: one report, the 300 ms the vendor
     /// requires, then the 551-report body. Nothing else, in that order.
@@ -488,9 +512,9 @@ mod tests {
         assert_eq!(
             rec.steps(),
             vec![
-                Step::Reports(1),                                 // start
-                Step::Slept(protocol::START_TO_DECLARE_DELAY_MS), // 300 ms
-                Step::Reports(body.len()),                        // declare + pixels + finish
+                Step::Reports(1),          // start
+                Step::Slept(300),          // the vendor's pause, as a number
+                Step::Reports(body.len()), // declare + pixels + finish
             ],
             "the picture pause must sit between the start report and the body"
         );
@@ -523,33 +547,29 @@ mod tests {
             // Both session-open reports go out together, then ONE pause.
             // There is no gap between report 18 and report 19.
             Step::Reports(2),
-            Step::Slept(protocol::GIF_SESSION_OPEN_DELAY_MS),
+            Step::Slept(30),
         ];
         for i in 0..2 {
             want.push(Step::Reports(1)); // frame header
-            want.push(Step::Slept(if i % protocol::GIF_SLOW_DELAY_EVERY == 0 {
-                protocol::GIF_FRAME_HEADER_SLOW_DELAY_MS
-            } else {
-                protocol::GIF_FRAME_HEADER_DELAY_MS
-            }));
+            want.push(Step::Slept(if i % 16 == 0 { 3000 } else { 30 }));
             // Declare-size and the first block run together: there is no
             // pause between them, so the trace shows them as one run of
             // 1 + 19 reports. Worth seeing rather than hiding -- it is the
             // only place in the upload where two different kinds of report
             // are sent back to back.
             want.push(Step::Reports(1 + per_block));
-            want.push(Step::Slept(protocol::GIF_BLOCK_DELAY_MS));
+            want.push(Step::Slept(30));
             for _ in 1..blocks {
                 want.push(Step::Reports(per_block));
-                want.push(Step::Slept(protocol::GIF_BLOCK_DELAY_MS));
+                want.push(Step::Slept(30));
             }
         }
         // Close reports one at a time, so the gap BETWEEN them survives.
         want.push(Step::Reports(1));
-        want.push(Step::Slept(protocol::GIF_SESSION_CLOSE_DELAY_MS));
+        want.push(Step::Slept(30));
         want.push(Step::Reports(1));
-        want.push(Step::Slept(protocol::GIF_SESSION_CLOSE_DELAY_MS));
-        want.push(Step::Slept(protocol::GIF_PRE_FINISH_DELAY_MS));
+        want.push(Step::Slept(30));
+        want.push(Step::Slept(500));
         want.push(Step::Reports(1)); // finish
 
         assert_eq!(rec.steps(), want);
@@ -600,7 +620,7 @@ mod tests {
         let slow: Vec<usize> = header_pauses
             .iter()
             .enumerate()
-            .filter(|(_, ms)| **ms == protocol::GIF_FRAME_HEADER_SLOW_DELAY_MS)
+            .filter(|(_, ms)| **ms == 3000)
             .map(|(i, _)| i)
             .collect();
         assert_eq!(
@@ -942,5 +962,37 @@ mod tests {
             notes[0]
         );
         assert!(notes[0].contains("before write #0"), "got {:?}", notes[0]);
+    }
+
+    /// Diagnostics the transport produces reach the caller as events.
+    ///
+    /// A real `Device` writes `YUNZII_DEBUG` lines through this same callback.
+    /// It used to `eprintln!` them, which would land on top of a TUI's screen;
+    /// nothing proved the replacement path actually carries them.
+    #[test]
+    fn transport_diagnostics_become_notes_rather_than_output() {
+        let plan = plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let never = AtomicBool::new(false);
+        let rec = Recorder::chatty("DEBUG send: de ad be ef");
+        let (result, events) = run_collecting(&rec, &never, &mut |cx| execute_picture(&plan, cx));
+        result.unwrap();
+
+        let notes: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                ExecEvent::Note(m) => Some(m.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes.len(),
+            plan.total_reports,
+            "one diagnostic per report reaches the caller"
+        );
+        assert!(
+            notes.iter().all(|n| n.contains("DEBUG send:")),
+            "got {:?}",
+            notes.first()
+        );
     }
 }
