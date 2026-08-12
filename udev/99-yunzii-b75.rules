@@ -1,1 +1,13 @@
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28e9", ATTRS{idProduct}=="31c8", TAG+="uaccess"
+# Yunzii B75 Pro Max -- access to the configuration channel only.
+#
+# The keyboard exposes four HID interfaces. Interface 0 carries the keystrokes:
+# a rule that matches on VID/PID alone hands every process running as the
+# logged-in user a live keylogger. Match bInterfaceNumber=="01" so only the
+# configuration channel (usage page 0xFF60, usage 0x61) is reachable.
+#
+# Two access paths on purpose. TAG+="uaccess" covers a normal graphical login.
+# GROUP="plugdev" covers the case where uaccess does not apply -- on at least
+# one Ubuntu/XFCE machine the tag alone left the nodes root:root and the vendor
+# tool could not open them either. Add yourself to plugdev if you need it:
+#   sudo usermod -aG plugdev "$USER"   # then log out and back in
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28e9", ATTRS{idProduct}=="31c8", ATTRS{bInterfaceNumber}=="01", MODE="0660", GROUP="plugdev", TAG+="uaccess"

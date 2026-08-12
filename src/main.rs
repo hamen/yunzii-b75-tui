@@ -8,20 +8,20 @@ use image::ImageDecoder; // for `decoder.orientation()` / `set_limits()`
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-/// Anything a subcommand can fail with. `set-picture` can fail before it ever
-/// touches the device -- a missing or unreadable image is not a device error
-/// and must not be reported as one.
+/// Anything a subcommand can fail with. `set-picture` and `set-gif` can fail
+/// before they ever touch the device -- a missing or unreadable file is not a
+/// device error and must not be reported as one.
 #[derive(Debug)]
 enum AppError {
     Device(DeviceError),
-    Picture(PictureError),
+    Media(MediaError),
 }
 
 impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AppError::Device(e) => write!(f, "{e}"),
-            AppError::Picture(e) => write!(f, "{e}"),
+            AppError::Media(e) => write!(f, "{e}"),
         }
     }
 }
@@ -34,33 +34,65 @@ impl From<DeviceError> for AppError {
     }
 }
 
-impl From<PictureError> for AppError {
-    fn from(e: PictureError) -> Self {
-        AppError::Picture(e)
+impl From<MediaError> for AppError {
+    fn from(e: MediaError) -> Self {
+        AppError::Media(e)
     }
 }
 
-/// A `set-picture` failure that happened while reading or converting the
-/// image, i.e. before any HID device was opened.
+/// Which command was reading the file, so the message can name the right one
+/// and list the formats that command actually accepts.
+///
+/// This exists because one shared error type once told `set-gif` users that
+/// the supported formats were "PNG and JPEG" -- correct for the other command,
+/// useless advice here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    Picture,
+    Gif,
+}
+
+impl MediaKind {
+    /// How the file was being used, for "could not use X as a ...".
+    fn subject(self) -> &'static str {
+        match self {
+            MediaKind::Picture => "a picture",
+            MediaKind::Gif => "an animation",
+        }
+    }
+
+    fn supported(self) -> &'static str {
+        match self {
+            MediaKind::Picture => "PNG and JPEG",
+            MediaKind::Gif => "GIF",
+        }
+    }
+}
+
+/// A `set-picture` or `set-gif` failure that happened while reading or
+/// converting the file, i.e. before any HID device was opened.
 #[derive(Debug)]
-pub struct PictureError {
+pub struct MediaError {
+    kind: MediaKind,
     path: PathBuf,
     detail: String,
 }
 
-impl std::fmt::Display for PictureError {
+impl std::fmt::Display for MediaError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "could not use {} as a picture: {}\n\
-             (supported formats: PNG and JPEG. The keyboard was not contacted.)",
+            "could not use {} as {}: {}\n\
+             (supported formats: {}. The keyboard was not contacted.)",
             self.path.display(),
-            self.detail
+            self.kind.subject(),
+            self.detail,
+            self.kind.supported()
         )
     }
 }
 
-impl std::error::Error for PictureError {}
+impl std::error::Error for MediaError {}
 
 #[derive(Parser)]
 #[command(
@@ -148,10 +180,10 @@ enum Commands {
         /// frame delays are uniform, otherwise 30.
         #[arg(long, value_parser = parse_fps)]
         fps: Option<u8>,
-        /// Upload at most this many frames, sampled evenly across the whole
-        /// animation. Without it, a GIF longer than 160 frames is an error
-        /// rather than being silently truncated.
-        #[arg(long)]
+        /// Upload at most this many frames, 1-160, sampled evenly across the
+        /// whole animation. Without it, a GIF longer than 160 frames is an
+        /// error rather than being silently truncated.
+        #[arg(long, value_parser = parse_max_frames)]
         max_frames: Option<NonZeroUsize>,
     },
 }
@@ -167,6 +199,25 @@ fn parse_fps(s: &str) -> Result<u8, String> {
             "must be between {} and {}",
             protocol::GIF_FPS_MIN,
             protocol::GIF_FPS_MAX
+        ));
+    }
+    Ok(v)
+}
+
+/// Rejects a frame count the device cannot store, at parse time.
+///
+/// Without this the value was checked only after the whole GIF had been
+/// decoded, so `--max-frames 161` paid for a full decode before failing on
+/// something clap could see immediately.
+fn parse_max_frames(s: &str) -> Result<NonZeroUsize, String> {
+    let v: usize = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a whole number"))?;
+    let v = NonZeroUsize::new(v).ok_or_else(|| "must be at least 1".to_string())?;
+    if v.get() > protocol::GIF_MAX_FRAMES {
+        return Err(format!(
+            "must be at most {} -- the keyboard cannot store more",
+            protocol::GIF_MAX_FRAMES
         ));
     }
     Ok(v)
@@ -286,8 +337,9 @@ fn run_clear_picture() -> Result<(), DeviceError> {
 /// Reads an image file and converts it to the panel's 30720-byte RGB565
 /// frame. Pure of any device access on purpose: a bad path or a corrupt file
 /// must fail as an image problem, and must be testable without hardware.
-fn load_and_encode_picture(path: &Path) -> Result<Vec<u8>, PictureError> {
-    let fail = |detail: String| PictureError {
+fn load_and_encode_picture(path: &Path) -> Result<Vec<u8>, MediaError> {
+    let fail = |detail: String| MediaError {
+        kind: MediaKind::Picture,
         path: path.to_path_buf(),
         detail,
     };
@@ -334,12 +386,61 @@ struct GifFrames {
     frames: Vec<Vec<u8>>,
     /// Frames in the source file, before any subsampling.
     source_count: usize,
-    /// Frame rate implied by the file's own delays, if they are uniform and
-    /// land inside the device's 1-60 range.
-    native_fps: Option<u8>,
-    /// True when the source's per-frame delays are not all equal. The device
-    /// animates at a single rate, so such a GIF cannot be reproduced exactly.
-    variable_delays: bool,
+    /// What the source file's own delays imply about the frame rate, and --
+    /// when they cannot be honoured -- the number needed to say why.
+    rate: SourceRate,
+}
+
+/// The frame rate a GIF asks for, and whether the device can give it.
+///
+/// This is one enum rather than an `Option<u8>` plus a "delays vary" flag,
+/// because that pair had a fourth state nobody handled: uniform delays that
+/// imply a rate outside 1-60 looked exactly like the in-range case having
+/// simply not been computed, so the upload silently dropped to 30 fps with no
+/// warning at all. Every arm below now carries the number its message needs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SourceRate {
+    /// Uniform delays that the device can store. Used as-is.
+    Usable(u8),
+    /// Uniform delays, but they ask for a rate outside 1-60. Carries the rate
+    /// the file wanted, so the warning can name it.
+    OutOfRange(f64),
+    /// Delays differ between frames. The device animates at a single rate, so
+    /// this cannot be reproduced exactly. Carries the mean delay in ms.
+    Variable { mean_delay_ms: f64 },
+}
+
+impl SourceRate {
+    /// The rate to upload at when the user gave no `--fps`.
+    fn or_default(self) -> u8 {
+        match self {
+            SourceRate::Usable(f) => f,
+            _ => protocol::GIF_FPS_DEFAULT,
+        }
+    }
+
+    /// Why the file's own rate was not used, if it was not. `None` means there
+    /// is nothing to warn about.
+    fn fallback_reason(self, chosen: u8) -> Option<String> {
+        match self {
+            SourceRate::Usable(_) => None,
+            SourceRate::OutOfRange(wanted) => Some(format!(
+                "note: this GIF's delays ask for about {wanted:.0} fps, outside the {}-{} fps \
+                 the keyboard can store. Using {chosen} fps.",
+                protocol::GIF_FPS_MIN,
+                protocol::GIF_FPS_MAX
+            )),
+            SourceRate::Variable { mean_delay_ms } => Some(format!(
+                "note: this GIF's frames have different delays (averaging {mean_delay_ms:.0} ms, \
+                 about {:.0} fps), but the keyboard animates at a single rate. Using {chosen} fps.",
+                if mean_delay_ms > 0.0 {
+                    1000.0 / mean_delay_ms
+                } else {
+                    0.0
+                }
+            )),
+        }
+    }
 }
 
 /// Decodes a GIF into panel-ready frames.
@@ -353,11 +454,9 @@ struct GifFrames {
 /// For the same reason, **every** frame is walked even when subsampling: a
 /// skipped frame still mutates the canvas that later frames build on. Only the
 /// selected frames are encoded and kept.
-fn load_gif_frames(
-    path: &Path,
-    max_frames: Option<NonZeroUsize>,
-) -> Result<GifFrames, PictureError> {
-    let fail = |detail: String| PictureError {
+fn load_gif_frames(path: &Path, max_frames: Option<NonZeroUsize>) -> Result<GifFrames, MediaError> {
+    let fail = |detail: String| MediaError {
+        kind: MediaKind::Gif,
         path: path.to_path_buf(),
         detail,
     };
@@ -397,28 +496,33 @@ fn load_gif_frames(
         frames.push(protocol::rgb565_encode(resized.to_rgba8().as_raw()));
     }
 
+    // A zero delay is "as fast as possible", which is not a rate the file is
+    // actually asking for, so it is treated as variable rather than as 0 fps.
     let uniform = delays.iter().all(|d| *d == delays[0]) && delays[0] > 0;
-    let native_fps = if uniform {
+    let rate = if uniform {
         let fps = (1000.0 / delays[0] as f64).round();
         if fps >= protocol::GIF_FPS_MIN as f64 && fps <= protocol::GIF_FPS_MAX as f64 {
-            Some(fps as u8)
+            SourceRate::Usable(fps as u8)
         } else {
-            None
+            SourceRate::OutOfRange(fps)
         }
     } else {
-        None
+        let sum: f64 = delays.iter().map(|d| *d as f64).sum();
+        SourceRate::Variable {
+            mean_delay_ms: sum / delays.len() as f64,
+        }
     };
 
     Ok(GifFrames {
         frames,
         source_count,
-        native_fps,
-        variable_delays: !uniform,
+        rate,
     })
 }
 
-fn gif_frames_iter(path: &Path) -> Result<image::Frames<'static>, PictureError> {
-    let fail = |detail: String| PictureError {
+fn gif_frames_iter(path: &Path) -> Result<image::Frames<'static>, MediaError> {
+    let fail = |detail: String| MediaError {
+        kind: MediaKind::Gif,
         path: path.to_path_buf(),
         detail,
     };
@@ -518,14 +622,17 @@ fn run_set_gif(
 
     let rate = match fps {
         Some(f) => f,
-        None => gif.native_fps.unwrap_or(protocol::GIF_FPS_DEFAULT),
+        None => gif.rate.or_default(),
     };
 
-    if fps.is_none() && gif.variable_delays {
-        eprintln!(
-            "note: this GIF's frames have different delays, but the keyboard animates at a \
-             single rate. Using {rate} fps."
-        );
+    // Only when the rate was not chosen explicitly: if the user asked for a
+    // rate, they already know it is not the file's.
+    if let Some(why) = fps
+        .is_none()
+        .then(|| gif.rate.fallback_reason(rate))
+        .flatten()
+    {
+        eprintln!("{why}");
     }
     if frame_count < gif.source_count {
         let suggested = (rate as f64 * frame_count as f64 / gif.source_count as f64).round();
@@ -943,8 +1050,14 @@ mod cli_tests {
     /// An implementation that encoded raw sub-frames would produce a 16x12
     /// buffer for frame 1 and fail the length assertion, or -- worse, if it
     /// resized that buffer to the panel -- upload a full screen of blue.
+    ///
+    /// **What this does not prove**: that disposal is honoured. "Do not
+    /// dispose" means keep the previous canvas, which is also what a decoder
+    /// that ignored disposal entirely would do. The name used to claim
+    /// otherwise. `gif_frames_honour_restore_to_background_disposal` below is
+    /// the test that can actually fail if disposal is ignored.
     #[test]
-    fn gif_frames_are_composited_with_position_and_disposal() {
+    fn gif_sub_rectangle_frames_are_composed_onto_the_previous_canvas() {
         let gif = load_gif_frames(Path::new("fixtures/test-anim-disposal.gif"), None).unwrap();
         assert_eq!(gif.frames.len(), 2);
         for f in &gif.frames {
@@ -985,14 +1098,187 @@ mod cli_tests {
         );
     }
 
+    /// Disposal being applied, in a way that fails if it is ignored.
+    ///
+    /// `fixtures/test-anim-disposal-background.gif` is 64x48. Frame 0 is the
+    /// full canvas -- grey with a RED mark at the top-left -- and its disposal
+    /// is **restore to background**, so the canvas must be cleared before
+    /// frame 1 is drawn. Frame 1 is a small GREEN rectangle somewhere else
+    /// entirely.
+    ///
+    /// So in frame 1 the red mark must be **gone**. A decoder that ignored
+    /// disposal would leave it there and fail this test -- which is exactly
+    /// what the "do not dispose" fixture above cannot detect.
+    #[test]
+    fn gif_frames_honour_restore_to_background_disposal() {
+        let gif = load_gif_frames(
+            Path::new("fixtures/test-anim-disposal-background.gif"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(gif.frames.len(), 2);
+
+        // Panel coordinates after the 64x48 -> 160x96 stretch.
+        let red_at = (30, 25); // inside frame 0's red mark
+        let green_at = (140, 84); // inside frame 1's green rectangle
+
+        assert_eq!(
+            gif_px(&gif.frames[0], red_at.0, red_at.1),
+            0xf800,
+            "frame 0 should be red there"
+        );
+        assert_eq!(
+            gif_px(&gif.frames[1], red_at.0, red_at.1),
+            0x0000,
+            "frame 1 must have been cleared to the background there -- if this is \
+             still red, disposal was ignored"
+        );
+
+        assert_eq!(
+            gif_px(&gif.frames[0], green_at.0, green_at.1),
+            0x8410,
+            "frame 0 is background grey where frame 1's rectangle will go"
+        );
+        assert_eq!(
+            gif_px(&gif.frames[1], green_at.0, green_at.1),
+            0x07e0,
+            "frame 1 should be green there"
+        );
+    }
+
+    /// Frames with different delays cannot be reproduced by a device that
+    /// animates at one rate, so the fallback must say so and name the average.
+    #[test]
+    fn variable_delays_fall_back_with_a_warning_that_names_the_average() {
+        let gif =
+            load_gif_frames(Path::new("fixtures/test-anim-variable-delay.gif"), None).unwrap();
+        assert_eq!(gif.source_count, 3);
+
+        // 100, 400, 100 ms -> mean 200 ms.
+        match gif.rate {
+            SourceRate::Variable { mean_delay_ms } => {
+                assert!(
+                    (mean_delay_ms - 200.0).abs() < 1.0,
+                    "mean delay should be ~200 ms, got {mean_delay_ms}"
+                );
+            }
+            other => panic!("expected variable delays, got {other:?}"),
+        }
+
+        let chosen = gif.rate.or_default();
+        assert_eq!(chosen, protocol::GIF_FPS_DEFAULT);
+
+        let why = gif
+            .rate
+            .fallback_reason(chosen)
+            .expect("a fallback must be explained");
+        assert!(why.contains("different delays"), "got: {why}");
+        assert!(why.contains("200 ms"), "must name the average; got: {why}");
+        assert!(
+            why.contains("30 fps"),
+            "must name the rate used; got: {why}"
+        );
+    }
+
+    /// Uniform delays asking for more than 60 fps used to be indistinguishable
+    /// from "no rate computed", so the upload silently dropped to 30 fps with
+    /// nothing printed. The warning is the point of this test.
+    #[test]
+    fn uniform_but_out_of_range_delays_warn_instead_of_clamping_silently() {
+        let gif = load_gif_frames(Path::new("fixtures/test-anim-too-fast.gif"), None).unwrap();
+
+        // 10 ms delays -> 100 fps, above the device's 60.
+        match gif.rate {
+            SourceRate::OutOfRange(wanted) => {
+                assert!(
+                    (wanted - 100.0).abs() < 1.0,
+                    "should have asked for ~100 fps, got {wanted}"
+                );
+            }
+            other => panic!("expected an out-of-range rate, got {other:?}"),
+        }
+
+        let chosen = gif.rate.or_default();
+        assert_eq!(chosen, protocol::GIF_FPS_DEFAULT);
+
+        let why = gif
+            .rate
+            .fallback_reason(chosen)
+            .expect("clamping must never be silent");
+        assert!(
+            why.contains("100 fps"),
+            "must name what was asked; got: {why}"
+        );
+        assert!(
+            why.contains("30 fps"),
+            "must name what was used; got: {why}"
+        );
+    }
+
+    /// The device stores at most 160 frames, so clap should refuse a larger
+    /// value rather than decoding the whole GIF and failing afterwards.
+    #[test]
+    fn max_frames_is_bounded_at_parse_time() {
+        assert!(parse_max_frames("0").is_err(), "0 frames is meaningless");
+        assert!(parse_max_frames("161").is_err(), "above the device limit");
+        assert!(parse_max_frames("nope").is_err(), "not a number");
+        assert_eq!(
+            parse_max_frames("160").unwrap().get(),
+            protocol::GIF_MAX_FRAMES,
+            "the limit itself is allowed"
+        );
+        assert_eq!(parse_max_frames("1").unwrap().get(), 1);
+
+        // The bound must track the protocol constant, not a copy of it.
+        let over = (protocol::GIF_MAX_FRAMES + 1).to_string();
+        let msg = parse_max_frames(&over).unwrap_err();
+        assert!(
+            msg.contains(&protocol::GIF_MAX_FRAMES.to_string()),
+            "the error should say the limit; got: {msg}"
+        );
+    }
+
+    /// A GIF failure must not tell the user to supply a PNG.
+    #[test]
+    fn media_errors_name_the_command_that_failed() {
+        let picture = MediaError {
+            kind: MediaKind::Picture,
+            path: PathBuf::from("/tmp/x.bmp"),
+            detail: "unsupported".to_string(),
+        }
+        .to_string();
+        assert!(picture.contains("as a picture"), "got: {picture}");
+        assert!(picture.contains("PNG and JPEG"), "got: {picture}");
+        assert!(!picture.contains("GIF."), "got: {picture}");
+
+        let gif = MediaError {
+            kind: MediaKind::Gif,
+            path: PathBuf::from("/tmp/x.png"),
+            detail: "not a readable GIF".to_string(),
+        }
+        .to_string();
+        assert!(gif.contains("as an animation"), "got: {gif}");
+        assert!(gif.contains("supported formats: GIF."), "got: {gif}");
+        assert!(
+            !gif.contains("PNG and JPEG"),
+            "a set-gif failure must not advertise PNG; got: {gif}"
+        );
+
+        // Both keep the part that saves a user from checking the keyboard.
+        for m in [picture, gif] {
+            assert!(m.contains("The keyboard was not contacted."), "got: {m}");
+        }
+    }
+
     #[test]
     fn gif_frames_encode_to_full_panel_frames_and_report_source_count() {
         let gif = load_gif_frames(Path::new("fixtures/test-anim-2frames.gif"), None).unwrap();
         assert_eq!(gif.frames.len(), 2);
         assert_eq!(gif.source_count, 2);
-        assert!(!gif.variable_delays);
         // 100 ms delays -> 10 fps, inside 1-60, so it becomes the default.
-        assert_eq!(gif.native_fps, Some(10));
+        assert_eq!(gif.rate, SourceRate::Usable(10));
+        assert_eq!(gif.rate.or_default(), 10);
+        assert_eq!(gif.rate.fallback_reason(10), None, "nothing to warn about");
     }
 
     #[test]

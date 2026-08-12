@@ -119,9 +119,19 @@ through a browser canvas, which cannot be reproduced outside a browser. The
 transport is byte-identical; the pixels are ours. For pixel art the result is
 usually sharper than the vendor's.
 
-The udev rule grants access to **all** of the keyboard's `hidraw`
-interfaces for this VID/PID (there's no finer-grained udev match available),
-not just the one this tool actually uses.
+The udev rule is limited to **interface 1**, the configuration channel this
+tool talks to. That limit is the point: interface 0 is the keyboard itself, so
+a rule matching on VID/PID alone would hand every process running as your user
+a live keylogger. Match `ATTRS{bInterfaceNumber}=="01"` and keep it that way —
+widening it back to the whole device is a real regression, not a convenience.
+
+If the device nodes still come up `root:root` after replugging (the `uaccess`
+tag does not apply on every desktop), add yourself to `plugdev`, then log out
+and back in:
+
+```bash
+sudo usermod -aG plugdev "$USER"
+```
 
 Requires: [Rust](https://rustup.rs) 🦀 **1.88+** (for `bin/ci`'s `cargo` steps too),
 the keyboard connected via USB-C (2.4G dongle / Bluetooth untested), and the

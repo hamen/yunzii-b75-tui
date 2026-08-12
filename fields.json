@@ -315,7 +315,7 @@
         "encoding": "constant",
         "note": "[magic, cmd=15, 0x00, len=0, innerCrc16(0x0F,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)."
       },
-      "note": "\"Switch to the GIF page\" button. Same info+finish shape as cmd11/cmd13. The bytes are correct and were always correct. Milestone 2 recorded that this command did not visibly switch the panel and filed it as unresolved; Milestone 3 found the real cause, and it was not this command -- the GIF under test had only ever been saved in the vendor's mode 0 (\"set as boot animation\"), which stores frames somewhere that never plays. Saved in mode 1 (\"save to the device\"), the GIF displays and cmd15 switches to it. See unresolved[0]. Not exposed by the CLI only because GIF upload is not implemented yet."
+      "note": "\"Switch to the GIF page\" button. Same info+finish shape as cmd11/cmd13. The bytes are correct and were always correct. Milestone 2 recorded that this command did not visibly switch the panel and filed it as unresolved; Milestone 3 found the real cause, and it was not this command -- the GIF under test had only ever been saved in the vendor's mode 0 (\"set as boot animation\"), which stores frames somewhere that never plays. Saved in mode 1 (\"save to the device\"), the GIF displays and cmd15 switches to it. See unresolved[0]. Milestone 4 ships it as `switch-page gif`, together with `set-gif`."
     },
     "cmd14_clearPicture": {
       "infoPackagePayload": {
