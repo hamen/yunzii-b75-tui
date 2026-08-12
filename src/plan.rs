@@ -444,6 +444,10 @@ pub struct PicturePlan {
 pub struct GifPlan {
     pub frames: Vec<Vec<u8>>,
     pub rate: u8,
+    /// Which of the vendor's three GIF modes to save into. Carried rather than
+    /// hardcoded in the executor because it is a property of what was decided,
+    /// and because modes 0 and 2 exist and are still unexercised.
+    pub mode: u8,
     /// Frames in the source file, before any subsampling.
     pub source_count: usize,
     pub total_reports: usize,
@@ -530,6 +534,7 @@ pub fn plan_gif_upload(
     Ok(GifPlan {
         frames: gif.frames,
         rate,
+        mode: protocol::GIF_MODE_SAVE_TO_DEVICE,
         source_count: gif.source_count,
         total_reports,
         est_secs,

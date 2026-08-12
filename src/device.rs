@@ -72,6 +72,13 @@ pub enum DeviceError {
     MultipleMatchingDevices(Vec<PathBuf>),
     PermissionDenied(PathBuf),
     Io(io::Error),
+    /// The caller asked for the transfer to stop. Not a fault, and must not be
+    /// reported as one -- but it still leaves whatever was already written on
+    /// the panel, so it carries the same "what this left behind" note the I/O
+    /// errors do.
+    Cancelled {
+        note: Option<String>,
+    },
 }
 
 impl std::fmt::Display for DeviceError {
@@ -90,6 +97,10 @@ impl std::fmt::Display for DeviceError {
                 "permission denied opening {path:?}. Install udev/99-yunzii-b75.rules to /etc/udev/rules.d/, then: sudo udevadm control --reload-rules && sudo udevadm trigger, then replug the keyboard."
             ),
             DeviceError::Io(e) => write!(f, "I/O error: {e}"),
+            DeviceError::Cancelled { note } => match note {
+                Some(n) => write!(f, "cancelled -- {n}"),
+                None => write!(f, "cancelled"),
+            },
         }
     }
 }
@@ -129,18 +140,28 @@ impl DeviceError {
     /// half-written frame on the panel. The I/O error alone doesn't tell the
     /// user that, or that `clear-picture` is the way out of it.
     ///
-    /// Only the `Io` variant is rewritten, and that is sufficient rather than
-    /// an oversight (raised as a nit in PR #4's cross-review): every failure
-    /// `send_sequence` can return mid-transaction is an `Io` -- a short write,
-    /// a drain error, or the wrong ACK count, which is built as
-    /// `Io(ErrorKind::TimedOut)`. The other three variants come only from
-    /// `find_device`/`open`, which run before a single report is sent, so
-    /// there is nothing partially written to warn about.
+    /// `Io` and `Cancelled` are rewritten; the rest are left alone, and that
+    /// is a rule rather than an oversight (raised as a nit in PR #4's
+    /// cross-review). Every failure a transfer can return mid-transaction is
+    /// an `Io` -- a short write, a drain error, or the wrong ACK count, built
+    /// as `Io(ErrorKind::TimedOut)` -- or a `Cancelled`. The other three come
+    /// only from `find_device`/`open`, which run before a single report is
+    /// sent, so there is nothing partially written to warn about.
+    ///
+    /// `Cancelled` was added in Milestone 5 and needs this just as much:
+    /// stopping a GIF upload half way leaves an incomplete animation on the
+    /// keyboard, and a bare "cancelled" would not say so.
     pub fn with_note(self, note: &str) -> Self {
         match self {
             DeviceError::Io(e) => {
                 DeviceError::Io(io::Error::new(e.kind(), format!("{e} -- {note}")))
             }
+            DeviceError::Cancelled { note: existing } => DeviceError::Cancelled {
+                note: Some(match existing {
+                    Some(prev) => format!("{prev} -- {note}"),
+                    None => note.to_string(),
+                }),
+            },
             other => other,
         }
     }
@@ -440,21 +461,28 @@ impl Device {
     /// ACKs per report; confirmed empirically in this milestone that only 1
     /// real ACK arrives at the native hidraw layer -- see PROTOCOL.md's
     /// "Linux hidraw write/read byte layout" section.)
+    /// `notes` receives diagnostics instead of stderr.
+    ///
+    /// This module used to `eprintln!` directly. It cannot any more: Milestone
+    /// 5 embeds these calls in a TUI, and a library that prints scribbles over
+    /// whatever the terminal is drawing. Where the text ends up is the
+    /// caller's decision, so the caller is handed the text.
     pub fn send_and_await_acks(
         &self,
         form: ReportIdForm,
         report: &[u8; REPORT_LEN],
+        notes: &mut dyn FnMut(String),
     ) -> Result<(), DeviceError> {
         let debug = std::env::var("YUNZII_DEBUG").is_ok();
         if debug {
-            eprintln!(
+            notes(format!(
                 "DEBUG send: {}",
                 report
                     .iter()
                     .map(|b| format!("{b:02x}"))
                     .collect::<Vec<_>>()
                     .join(" ")
-            );
+            ));
         }
         self.write_report(form, report)?;
 
@@ -474,26 +502,26 @@ impl Device {
             match self.read_one()? {
                 Some(ack) if Self::is_valid_ack(report, &ack) => {
                     if debug {
-                        eprintln!(
+                        notes(format!(
                             "DEBUG  ack: {}",
                             ack.iter()
                                 .map(|b| format!("{b:02x}"))
                                 .collect::<Vec<_>>()
                                 .join(" ")
-                        );
+                        ));
                     }
                     acks_received += 1;
                 }
                 Some(other) => {
                     if debug {
-                        eprintln!(
+                        notes(format!(
                             "DEBUG  bad: {}",
                             other
                                 .iter()
                                 .map(|b| format!("{b:02x}"))
                                 .collect::<Vec<_>>()
                                 .join(" ")
-                        );
+                        ));
                     }
                     return Err(DeviceError::Io(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -525,13 +553,16 @@ impl Device {
         &self,
         form: ReportIdForm,
         reports: &[[u8; REPORT_LEN]],
+        notes: &mut dyn FnMut(String),
     ) -> Result<(), DeviceError> {
         for (i, report) in reports.iter().enumerate() {
             let drained = self.drain()?;
             if drained > 0 {
-                eprintln!("warning: drained {drained} unexpected report(s) before write #{i}");
+                notes(format!(
+                    "warning: drained {drained} unexpected report(s) before write #{i}"
+                ));
             }
-            self.send_and_await_acks(form, report)?;
+            self.send_and_await_acks(form, report, notes)?;
         }
         Ok(())
     }
