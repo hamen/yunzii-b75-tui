@@ -194,6 +194,12 @@ fn confirm(f: &mut Frame, area: Rect, pending: &Pending) {
                 format!("~{}s to upload", plan.est_secs),
             ];
             for n in &plan.notes {
+                // A rate chosen by hand is the equivalent of `--fps`, so the
+                // planner's "using 30 fps instead" no longer applies. Showing
+                // it next to a rate the user just set would be a lie.
+                if rate_override.is_some() && n.kind == crate::plan::NoteKind::RateFallback {
+                    continue;
+                }
                 v.push(n.text.clone());
             }
             (path.file_name().unwrap_or_default().to_string_lossy(), v)
@@ -330,7 +336,10 @@ fn keys(f: &mut Frame, area: Rect, app: &App) {
     let hint = match &app.screen {
         Screen::Menu => "q quit · ↑↓ move · ⏎ run",
         Screen::Browse { .. } => "esc back · ↑↓ move · ⏎ open · ⌫ parent · ~ home",
-        Screen::Confirm(_) => "esc discard · ⏎ upload · ← → rate",
+        Screen::Confirm(p) => match p.as_ref() {
+            Pending::Gif { .. } => "esc discard · ⏎ upload · ← → rate",
+            Pending::Picture { .. } => "esc discard · ⏎ upload",
+        },
         Screen::Running(_) => "esc cancel · q quit",
     };
     f.render_widget(

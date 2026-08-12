@@ -15,7 +15,7 @@ use app::{App, Key, Update};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::io;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long to wait for a keypress before redrawing anyway.
 ///
@@ -35,21 +35,42 @@ pub fn is_interactive() -> bool {
     io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
+/// How long a confirmed quit waits for the worker to stop.
+///
+/// The plan's number. Long enough for a report and its acknowledgement, short
+/// enough that a thread which has wedged does not hold the terminal hostage.
+const CANCEL_GRACE: Duration = Duration::from_secs(2);
+
 pub fn run() -> io::Result<()> {
-    term::install_panic_hook();
     let guard = term::Guard::new(term::RealTerm)?;
+    // The hook shares the guard's flag, so whichever runs first wins and the
+    // other does nothing. Without that they both restore, and leaving the
+    // alternate screen twice pops one the user was already in.
+    term::install_panic_hook(guard.flag());
+
     let result = event_loop();
     guard.restore();
-    result
+
+    // After the alternate screen is gone, so it can actually be read.
+    match result {
+        Ok(Some(message)) => {
+            eprintln!("{message}");
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
-fn event_loop() -> io::Result<()> {
+/// Returns a message to print once the terminal is back, if there is one.
+fn event_loop() -> io::Result<Option<String>> {
     let mut terminal =
         ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
 
     let start_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
     let mut app = App::new(start_dir);
 
+    let mut quit_deadline: Option<Instant> = None;
     let (job_tx, job_rx) = mpsc::channel();
     let (update_tx, update_rx) = mpsc::channel();
     let flags = worker::Flags::default();
@@ -82,6 +103,14 @@ fn event_loop() -> io::Result<()> {
             }
         }
 
+        // A confirmed quit waits for the worker to acknowledge the cancel,
+        // but not forever.
+        match (app.quitting, quit_deadline) {
+            (true, None) => quit_deadline = Some(Instant::now() + CANCEL_GRACE),
+            (true, Some(t)) if Instant::now() >= t => app.give_up_waiting(),
+            _ => {}
+        }
+
         if app.should_quit {
             break;
         }
@@ -97,7 +126,7 @@ fn event_loop() -> io::Result<()> {
         }
     }
 
-    Ok(())
+    Ok(app.final_message)
 }
 
 fn translate(code: KeyCode) -> Option<Key> {

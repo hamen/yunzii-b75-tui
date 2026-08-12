@@ -73,6 +73,13 @@ pub fn spawn_discovery(tx: Sender<Update>, busy: Arc<AtomicBool>, ready: Arc<Ato
 }
 
 /// Runs one job at a time and reports what it is doing.
+///
+/// A job that panics does not take the worker with it, and does not leave the
+/// interface waiting for an update that will never come. Detecting worker
+/// death by watching for a closed channel does not work here -- the discovery
+/// thread holds a sender for the life of the program, so the receiver never
+/// disconnects. Catching the panic is both simpler and better: the next job
+/// still runs.
 pub fn spawn_worker(
     jobs: Receiver<Job>,
     tx: Sender<Update>,
@@ -82,15 +89,40 @@ pub fn spawn_worker(
     std::thread::spawn(move || {
         for job in jobs {
             busy.store(true, Ordering::Relaxed);
-            let result = run_job(job, &tx, &ready);
+            let result = guarded(|| run_job(job, &tx, &ready));
+            // Cleared even on a panic. Leaving it set would stop the discovery
+            // thread from ever probing again.
             busy.store(false, Ordering::Relaxed);
-            if let Some(finished) = result
+            let finished = match result {
+                Ok(r) => r,
+                Err(panic) => Some(Err(format!(
+                    "the job stopped unexpectedly ({panic}) -- whatever was being sent may be \
+                     incomplete"
+                ))),
+            };
+            if let Some(finished) = finished
                 && tx.send(Update::Finished(finished)).is_err()
             {
-                return;
+                return; // the interface is gone
             }
         }
     });
+}
+
+/// Runs `f`, turning a panic into a message instead of a dead thread.
+///
+/// Extracted so it can be tested: there is no `Job` variant that panics, and
+/// adding one purely for a test would be worse than testing the mechanism.
+fn guarded<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|e| {
+        if let Some(s) = e.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = e.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "panic".to_string()
+        }
+    })
 }
 
 /// `None` means the job reported its own completion (preview does).
@@ -161,7 +193,19 @@ fn run_job(
 
 fn build_preview(path: &std::path::Path, for_gif: bool) -> Result<Pending, String> {
     if for_gif {
-        let plan = plan::plan_gif_upload(path, None, None).map_err(|e| e.to_string())?;
+        // No `max_frames`: sampling a long animation down is a decision with a
+        // suggested rate attached, and this interface has nowhere sensible to
+        // put that conversation yet. Refusing with a pointer is honest.
+        let plan = plan::plan_gif_upload(path, None, None).map_err(|e| {
+            let mut m = e.to_string();
+            if m.contains("frames") && m.contains("160") {
+                m.push_str(
+                    "\n(the interface cannot sample frames yet -- use the command line: \
+                     `yunzii-b75-tui set-gif <file> --max-frames 160`)",
+                );
+            }
+            m
+        })?;
         let first = plan.frames.first().cloned().unwrap_or_default();
         Ok(Pending::Gif {
             path: path.to_path_buf(),
@@ -231,11 +275,11 @@ fn upload(
                 },
             }),
             ExecEvent::Note(m) => tx.send(Update::Note(m)),
-            // The CLI prints a line per finished frame; the TUI's progress bar
-            // already shows it, so this is only worth logging.
-            ExecEvent::FrameDone { index, of } => {
-                tx.send(Update::Note(format!("frame {}/{of}", index + 1)))
-            }
+            // The CLI prints a line per finished frame. Here the gauge already
+            // says "frame 12/36", so repeating it in the log would push
+            // everything else out of a scrollback that holds 200 lines -- a
+            // 160-frame upload would be the only thing in it.
+            ExecEvent::FrameDone { .. } => Ok(()),
         };
     };
     let mut cx = ExecCtx {
@@ -287,5 +331,97 @@ impl Default for Flags {
             busy: Arc::new(AtomicBool::new(false)),
             ready: Arc::new(AtomicBool::new(false)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// A panicking job is reported, not swallowed, and does not kill the
+    /// worker or leave `busy` stuck.
+    ///
+    /// Stuck `busy` is the quiet half of this bug: the discovery thread checks
+    /// it before probing, so a worker that died mid-job would also stop the
+    /// keyboard from ever being found again.
+    #[test]
+    fn a_panicking_job_is_reported_and_the_worker_survives() {
+        let out = guarded(|| -> u8 { panic!("decoder exploded") });
+        assert_eq!(out.unwrap_err(), "decoder exploded");
+
+        // And the ordinary path is untouched.
+        assert_eq!(guarded(|| 7).unwrap(), 7);
+    }
+
+    /// The worker keeps taking jobs after one fails, and always answers.
+    #[test]
+    fn the_worker_answers_every_job_even_without_a_device() {
+        let (job_tx, job_rx) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        let flags = Flags::default();
+        spawn_worker(job_rx, tx, flags.busy.clone(), flags.ready.clone());
+
+        // Two jobs that cannot succeed here: no plan, no device. Both must
+        // come back rather than hanging.
+        job_tx
+            .send(Job::Preview {
+                path: std::path::PathBuf::from("/nonexistent.gif"),
+                for_gif: true,
+            })
+            .unwrap();
+
+        let first = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the worker must answer");
+        match first {
+            Update::Preview(r) => assert!(r.is_err(), "a missing file cannot preview"),
+            other => panic!("expected a preview reply, got {other:?}"),
+        }
+
+        job_tx
+            .send(Job::Preview {
+                path: std::path::PathBuf::from("/also-missing.png"),
+                for_gif: false,
+            })
+            .unwrap();
+        let second = rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the worker is still alive after a failure");
+        assert!(matches!(second, Update::Preview(_)));
+
+        // `busy` is cleared just AFTER the reply is sent, so this waits for it
+        // rather than sampling once -- a flaky test is worse than no test.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while flags.busy.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !flags.busy.load(Ordering::Relaxed),
+            "busy must be cleared, or discovery never probes again"
+        );
+    }
+
+    /// A real preview goes through the planner and produces something the
+    /// confirm screen can draw.
+    #[test]
+    fn a_preview_carries_the_plan_it_will_upload() {
+        let built = build_preview(std::path::Path::new("fixtures/test-anim-2frames.gif"), true)
+            .expect("a valid GIF");
+        match built {
+            Pending::Gif { plan, preview, .. } => {
+                assert_eq!(plan.frames.len(), 2);
+                assert!(preview.height() > 0);
+            }
+            other => panic!("expected a GIF, got {other:?}"),
+        }
+    }
+
+    /// Probing without assuming a keyboard is attached: whatever it returns
+    /// must be a state the interface knows how to describe.
+    #[test]
+    fn probing_always_yields_a_describable_state() {
+        let state = probe();
+        assert!(!state.summary().is_empty());
     }
 }

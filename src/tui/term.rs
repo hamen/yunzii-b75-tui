@@ -10,6 +10,7 @@
 //! before reporting the error.
 
 use std::io;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The terminal operations, behind a trait so the tests can watch them.
@@ -51,7 +52,7 @@ impl Term for RealTerm {
 /// Restores on drop, once.
 pub struct Guard<T: Term> {
     term: T,
-    restored: AtomicBool,
+    restored: Arc<AtomicBool>,
 }
 
 impl<T: Term> Guard<T> {
@@ -67,8 +68,17 @@ impl<T: Term> Guard<T> {
         }
         Ok(Self {
             term,
-            restored: AtomicBool::new(false),
+            restored: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// The flag that says restoration already happened.
+    ///
+    /// Handed to the panic hook so the two share one answer. Two independent
+    /// flags would both read "not yet" and both restore, and leaving the
+    /// alternate screen twice pops one the user was already in.
+    pub fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.restored)
     }
 
     /// Puts the terminal back. Safe to call more than once; the second call
@@ -97,12 +107,14 @@ impl<T: Term> Drop for Guard<T> {
 /// Separate from the guard because a panic unwinds past `main`'s locals in an
 /// order nobody should have to reason about; the hook runs first and the
 /// guard's idempotence makes the later drop a no-op.
-pub fn install_panic_hook() {
+pub fn install_panic_hook(restored: Arc<AtomicBool>) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let t = RealTerm;
-        let _ = t.leave_alt();
-        let _ = t.disable_raw();
+        if !restored.swap(true, Ordering::SeqCst) {
+            let t = RealTerm;
+            let _ = t.leave_alt();
+            let _ = t.disable_raw();
+        }
         previous(info);
     }));
 }
@@ -226,6 +238,51 @@ mod tests {
             fake.ops(),
             vec![Op::EnableRaw, Op::EnterAlt, Op::LeaveAlt, Op::DisableRaw],
             "the drop guard runs during unwind"
+        );
+    }
+
+    /// A hook sharing the guard's flag restores exactly once between them.
+    ///
+    /// The interesting failure is not "neither restores" but "both do":
+    /// leaving the alternate screen twice pops one the user was already in,
+    /// and their scrollback goes with it.
+    #[test]
+    fn the_hook_and_the_guard_do_not_both_restore() {
+        let fake = Fake::new();
+        let guard = Guard::new(&fake).unwrap();
+        let flag = guard.flag();
+
+        // What the hook does, without installing a process-wide hook in a
+        // test that runs alongside others.
+        assert!(!flag.swap(true, Ordering::SeqCst), "the hook wins the race");
+        // ...so the guard's own restore must now do nothing.
+        guard.restore();
+        drop(guard);
+
+        assert_eq!(
+            fake.ops(),
+            vec![Op::EnableRaw, Op::EnterAlt],
+            "the guard must not restore again after the hook claimed it"
+        );
+    }
+
+    /// And the other order: the guard restores, so a later hook does nothing.
+    #[test]
+    fn a_guard_that_restored_first_leaves_the_hook_nothing_to_do() {
+        let fake = Fake::new();
+        let flag = {
+            let guard = Guard::new(&fake).unwrap();
+            let flag = guard.flag();
+            guard.restore();
+            flag
+        };
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "the flag is shared, so the hook sees it as already done"
+        );
+        assert_eq!(
+            fake.ops(),
+            vec![Op::EnableRaw, Op::EnterAlt, Op::LeaveAlt, Op::DisableRaw]
         );
     }
 }

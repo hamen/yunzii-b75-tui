@@ -513,14 +513,17 @@ mod cli_tests {
         let notes = vec![
             Note {
                 stream: Stream::Stderr,
+                kind: plan::NoteKind::Info,
                 text: "a warning".into(),
             },
             Note {
                 stream: Stream::Stdout,
+                kind: plan::NoteKind::Info,
                 text: "a summary".into(),
             },
             Note {
                 stream: Stream::Stderr,
+                kind: plan::NoteKind::Info,
                 text: "another warning".into(),
             },
         ];

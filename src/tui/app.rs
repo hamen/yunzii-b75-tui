@@ -220,6 +220,9 @@ pub enum Key {
 }
 
 pub struct App {
+    /// Where the file browser opens. Remembered between visits, so picking a
+    /// second file does not start from the top again.
+    pub browse_dir: PathBuf,
     pub device: DeviceState,
     pub screen: Screen,
     pub selected: usize,
@@ -227,19 +230,40 @@ pub struct App {
     pub status: Option<String>,
     /// Set when the user asked to quit during a job and has not answered yet.
     pub quit_confirm: bool,
+    /// The user confirmed a quit and the worker is being asked to stop.
+    ///
+    /// Quitting does not happen here: leaving while a report is in flight is
+    /// how you get a half-written animation *and* no message about it. The
+    /// event loop waits for the worker to acknowledge, with a deadline.
+    pub quitting: bool,
     pub should_quit: bool,
+    /// Printed on the normal screen after the terminal is restored.
+    ///
+    /// A partial-write warning shown inside the alternate screen is a warning
+    /// nobody reads: the screen is torn down a moment later.
+    pub final_message: Option<String>,
+    /// A job has been handed to the worker and has not reported back.
+    ///
+    /// The queue holds one. Refusing is better than queueing: a second
+    /// upload started behind the first would run against a device whose state
+    /// the user has forgotten about.
+    pub job_pending: bool,
 }
 
 impl App {
     pub fn new(start_dir: PathBuf) -> Self {
         Self {
+            browse_dir: start_dir.clone(),
             device: DeviceState::NotFound,
             screen: Screen::Menu,
             selected: 0,
             log: Vec::new(),
             status: Some(format!("browsing from {}", start_dir.display())),
             quit_confirm: false,
+            quitting: false,
             should_quit: false,
+            final_message: None,
+            job_pending: false,
         }
     }
 
@@ -274,22 +298,56 @@ impl App {
         if self.quit_confirm {
             match key {
                 Key::Char('y') | Key::Char('Y') | Key::Enter => {
-                    if let Screen::Running(r) = &mut self.screen {
-                        r.cancel.store(true, Ordering::Relaxed);
-                        r.cancelling = true;
+                    self.quit_confirm = false;
+                    match &mut self.screen {
+                        Screen::Running(r) => {
+                            r.cancel.store(true, Ordering::Relaxed);
+                            r.cancelling = true;
+                            // NOT should_quit: wait for the worker to stop, so
+                            // the partial-write warning it produces can be
+                            // shown after the terminal is restored.
+                            self.quitting = true;
+                            self.status = Some("cancelling before quitting…".into());
+                        }
+                        // It finished while the prompt was up.
+                        _ => self.should_quit = true,
                     }
-                    self.should_quit = true;
                 }
                 _ => self.quit_confirm = false,
             }
             return None;
         }
 
-        match &mut self.screen {
+        // One job at a time. Enter is the only key that starts one.
+        if self.job_pending && key == Key::Enter {
+            self.note("still working on the last one");
+            return None;
+        }
+
+        let job = match &mut self.screen {
             Screen::Menu => self.menu_key(key),
             Screen::Browse { .. } => self.browse_key(key),
             Screen::Confirm(_) => self.confirm_key(key),
             Screen::Running(_) => self.running_key(key),
+        };
+        if job.is_some() {
+            self.job_pending = true;
+        }
+        job
+    }
+
+    /// Called by the event loop when the wait for a cancelled worker runs out.
+    ///
+    /// Two seconds, then leave anyway. A UI that hangs forever because a
+    /// thread did not answer is worse than one that says so and goes.
+    pub fn give_up_waiting(&mut self) {
+        if self.quitting && !self.should_quit {
+            self.should_quit = true;
+            self.final_message = Some(
+                "quit before the upload confirmed it had stopped -- whatever is on the \
+                 keyboard may be incomplete."
+                    .into(),
+            );
         }
     }
 
@@ -330,7 +388,9 @@ impl App {
     }
 
     fn open_browser(&mut self, for_gif: bool) {
-        let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        // The remembered directory, not `current_dir()`: the status line says
+        // where browsing starts, and the two must not disagree.
+        let dir = self.browse_dir.clone();
         let (entries, error) = read_dir(&dir, for_gif);
         self.screen = Screen::Browse {
             for_gif,
@@ -371,6 +431,7 @@ impl App {
                 // At the root this does nothing rather than looping.
                 if let Some(parent) = dir.parent().map(|p| p.to_path_buf()) {
                     let (e, err) = read_dir(&parent, for_gif);
+                    self.browse_dir = parent.clone();
                     *dir = parent;
                     *entries = e;
                     *error = err;
@@ -382,6 +443,7 @@ impl App {
                 match std::env::var_os("HOME").map(PathBuf::from) {
                     Some(home) => {
                         let (e, err) = read_dir(&home, for_gif);
+                        self.browse_dir = home.clone();
                         *dir = home;
                         *entries = e;
                         *error = err;
@@ -395,6 +457,7 @@ impl App {
                 let entry = entries.get(*selected)?.clone();
                 if entry.is_dir {
                     let (e, err) = read_dir(&entry.path, for_gif);
+                    self.browse_dir = entry.path.clone();
                     *dir = entry.path;
                     *entries = e;
                     *error = err;
@@ -491,13 +554,31 @@ impl App {
                 }
                 self.device = d;
             }
-            Update::Preview(result) => match *result {
-                Ok(pending) => self.screen = Screen::Confirm(Box::new(pending)),
-                Err(e) => {
-                    self.note(e);
-                    // Stay in the browser so another file can be picked.
+            Update::Preview(result) => {
+                self.job_pending = false;
+                match *result {
+                    Ok(pending) => self.screen = Screen::Confirm(Box::new(pending)),
+                    Err(e) => {
+                        self.note(e);
+                        // Stay in the browser so another file can be picked --
+                        // and re-read it, since the usual reason a preview
+                        // fails is that the file moved or vanished.
+                        if let Screen::Browse {
+                            for_gif,
+                            dir,
+                            entries,
+                            selected,
+                            error,
+                        } = &mut self.screen
+                        {
+                            let (e, err) = read_dir(dir, *for_gif);
+                            *entries = e;
+                            *error = err;
+                            *selected = (*selected).min(entries.len().saturating_sub(1));
+                        }
+                    }
                 }
-            },
+            }
             Update::Started {
                 label,
                 total,
@@ -526,14 +607,18 @@ impl App {
             }
             Update::Note(m) => self.note(m),
             Update::Finished(result) => {
+                self.job_pending = false;
                 self.screen = Screen::Menu;
-                match result {
-                    Ok(m) => self.note(m),
-                    Err(e) => self.note(e),
-                }
-                // A quit that was waiting on cancellation can now happen.
-                if self.quit_confirm {
+                let text = match result {
+                    Ok(m) => m,
+                    Err(e) => e,
+                };
+                self.note(text.clone());
+                // A quit that was waiting for the worker can happen now, and
+                // whatever the worker said goes to the normal screen.
+                if self.quitting {
                     self.should_quit = true;
+                    self.final_message = Some(text);
                 }
             }
         }
@@ -822,7 +907,64 @@ mod tests {
         a.on_key(Key::Char('q'));
         a.on_key(Key::Char('y'));
         assert!(cancel.load(Ordering::Relaxed), "yes cancels");
+        assert!(
+            !a.should_quit,
+            "but it does NOT leave yet: exiting while a report is in flight is how you \
+             get a half-written animation and no message about it"
+        );
+        assert!(a.quitting, "it is waiting for the worker");
+
+        // The worker stops and says what it left behind; only now do we go,
+        // and that message is carried out to the normal screen.
+        a.on_update(Update::Finished(Err(
+            "cancelled -- the animation on the keyboard may be incomplete".into(),
+        )));
         assert!(a.should_quit);
+        assert_eq!(
+            a.final_message.as_deref(),
+            Some("cancelled -- the animation on the keyboard may be incomplete"),
+            "printed after the terminal is restored, where it can be read"
+        );
+    }
+
+    /// A worker that never answers must not hold the interface hostage.
+    #[test]
+    fn a_worker_that_does_not_answer_is_given_up_on() {
+        let mut a = app_ready();
+        running(&mut a);
+        a.on_key(Key::Char('q'));
+        a.on_key(Key::Char('y'));
+        assert!(!a.should_quit);
+
+        a.give_up_waiting();
+        assert!(a.should_quit, "two seconds is the limit, then we leave");
+        assert!(
+            a.final_message
+                .as_deref()
+                .unwrap()
+                .contains("may be incomplete"),
+            "and still warn: {:?}",
+            a.final_message
+        );
+    }
+
+    /// One job at a time; a second Enter is refused rather than queued.
+    #[test]
+    fn a_second_job_is_refused_while_one_is_running() {
+        let mut a = app_ready();
+        a.selected = 0; // Set time
+        assert!(a.on_key(Key::Enter).is_some(), "the first one starts");
+        assert!(a.job_pending);
+
+        assert!(
+            a.on_key(Key::Enter).is_none(),
+            "the second must not be queued behind it"
+        );
+        assert!(a.status.as_deref().unwrap().contains("still working"));
+
+        a.on_update(Update::Finished(Ok("set the clock".into())));
+        assert!(!a.job_pending, "and the gate opens again");
+        assert!(a.on_key(Key::Enter).is_some());
     }
 
     #[test]
@@ -900,16 +1042,15 @@ mod tests {
     }
 
     /// A quit that was waiting for the upload to stop happens once it has.
+    /// If the job finishes while the prompt is still up, answering yes just
+    /// leaves -- there is nothing left to wait for.
     #[test]
-    fn a_pending_quit_completes_when_the_job_ends() {
+    fn confirming_a_quit_after_the_job_ended_leaves_immediately() {
         let mut a = app_ready();
         running(&mut a);
         a.on_key(Key::Char('q'));
+        a.on_update(Update::Finished(Ok("done".into())));
         a.on_key(Key::Char('y'));
-        assert!(a.should_quit);
-
-        // And if the worker reports afterwards, that is still a clean exit.
-        a.on_update(Update::Finished(Err("cancelled".into())));
         assert!(a.should_quit);
         assert!(matches!(a.screen, Screen::Menu));
     }
@@ -1029,5 +1170,51 @@ mod tests {
         };
         a.on_key(Key::Esc);
         assert!(matches!(a.screen, Screen::Menu));
+    }
+
+    /// The browser opens where it was left, and the status line agrees.
+    #[test]
+    fn the_browser_remembers_where_it_was() {
+        let mut a = app_ready();
+        a.browse_dir = PathBuf::from("fixtures");
+        a.selected = Action::ALL
+            .iter()
+            .position(|x| *x == Action::UploadGif)
+            .unwrap();
+        a.on_key(Key::Enter);
+        match &a.screen {
+            Screen::Browse { dir, .. } => assert_eq!(dir, Path::new("fixtures")),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    /// A preview that fails re-reads the directory, because the usual reason
+    /// is that the file moved or was deleted since it was listed.
+    #[test]
+    fn a_failed_preview_refreshes_the_listing() {
+        let mut a = app_ready();
+        a.screen = Screen::Browse {
+            for_gif: true,
+            dir: PathBuf::from("fixtures"),
+            entries: vec![Entry {
+                name: "ghost.gif".into(),
+                path: PathBuf::from("fixtures/ghost.gif"),
+                is_dir: false,
+            }],
+            selected: 0,
+            error: None,
+        };
+        a.on_update(Update::Preview(Box::new(Err("no such file".into()))));
+
+        match &a.screen {
+            Screen::Browse { entries, .. } => {
+                assert!(
+                    !entries.iter().any(|e| e.name == "ghost.gif"),
+                    "the stale entry must be gone after a refresh"
+                );
+                assert!(!entries.is_empty(), "and the real files are listed");
+            }
+            other => panic!("got {other:?}"),
+        }
     }
 }

@@ -408,10 +408,25 @@ pub enum Stream {
     Stderr,
 }
 
+/// Why a note exists, so a caller can tell which ones still apply.
+///
+/// The TUI needs this: choosing a rate by hand is the equivalent of `--fps`
+/// and suppresses the fallback warning, so the confirm screen has to know
+/// which note *was* that warning. Without it the interface shows "using 30
+/// fps" next to a rate the user just set to 24, and the interface is lying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteKind {
+    /// The file's own rate could not be used, so one was chosen for it.
+    RateFallback,
+    /// Anything else: the summary, the subsampling warning.
+    Info,
+}
+
 /// Something the user should be told before the upload starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
     pub stream: Stream,
+    pub kind: NoteKind,
     pub text: String,
 }
 
@@ -419,6 +434,7 @@ impl Note {
     fn out(text: impl Into<String>) -> Self {
         Self {
             stream: Stream::Stdout,
+            kind: NoteKind::Info,
             text: text.into(),
         }
     }
@@ -426,6 +442,15 @@ impl Note {
     fn err(text: impl Into<String>) -> Self {
         Self {
             stream: Stream::Stderr,
+            kind: NoteKind::Info,
+            text: text.into(),
+        }
+    }
+
+    fn rate_fallback(text: impl Into<String>) -> Self {
+        Self {
+            stream: Stream::Stderr,
+            kind: NoteKind::RateFallback,
             text: text.into(),
         }
     }
@@ -508,7 +533,7 @@ pub fn plan_gif_upload(
         .then(|| gif.rate.fallback_reason(rate))
         .flatten()
     {
-        notes.push(Note::err(why));
+        notes.push(Note::rate_fallback(why));
     }
 
     if frame_count < gif.source_count {

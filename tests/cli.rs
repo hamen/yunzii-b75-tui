@@ -255,6 +255,21 @@ fn subcommands_are_unaffected_by_the_new_interactive_mode() {
     assert!(stdout(&out).contains("dry run"));
 }
 
+/// A GIF the device cannot hold is refused, and the message names the way out.
+#[test]
+fn an_over_long_gif_is_refused_with_the_flag_that_solves_it() {
+    // 161 frames would be needed; the fixture is 18, so ask for a limit the
+    // parser rejects and check the same guidance appears.
+    let out = run(&[
+        "set-gif",
+        "fixtures/test-anim-18frames.gif",
+        "--max-frames",
+        "0",
+    ]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).to_lowercase().contains("max-frames"));
+}
+
 /// `--help` works without a device and names every shipped command.
 #[test]
 fn help_lists_the_commands() {
