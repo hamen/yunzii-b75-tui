@@ -367,7 +367,7 @@ pub fn select_frame_indices(
         None => {
             if n > protocol::GIF_MAX_FRAMES {
                 return Err(format!(
-                    "it has {n} frames but the keyboard stores at most {}. \
+                    "it has {n} frames, {TOO_MANY_FRAMES} ({}). \
                      Re-run with --max-frames {} to upload a uniformly sampled subset, \
                      or shorten the GIF first.",
                     protocol::GIF_MAX_FRAMES,
@@ -408,10 +408,25 @@ pub enum Stream {
     Stderr,
 }
 
+/// Why a note exists, so a caller can tell which ones still apply.
+///
+/// The TUI needs this: choosing a rate by hand is the equivalent of `--fps`
+/// and suppresses the fallback warning, so the confirm screen has to know
+/// which note *was* that warning. Without it the interface shows "using 30
+/// fps" next to a rate the user just set to 24, and the interface is lying.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteKind {
+    /// The file's own rate could not be used, so one was chosen for it.
+    RateFallback,
+    /// Anything else: the summary, the subsampling warning.
+    Info,
+}
+
 /// Something the user should be told before the upload starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
     pub stream: Stream,
+    pub kind: NoteKind,
     pub text: String,
 }
 
@@ -419,6 +434,7 @@ impl Note {
     fn out(text: impl Into<String>) -> Self {
         Self {
             stream: Stream::Stdout,
+            kind: NoteKind::Info,
             text: text.into(),
         }
     }
@@ -426,6 +442,15 @@ impl Note {
     fn err(text: impl Into<String>) -> Self {
         Self {
             stream: Stream::Stderr,
+            kind: NoteKind::Info,
+            text: text.into(),
+        }
+    }
+
+    fn rate_fallback(text: impl Into<String>) -> Self {
+        Self {
+            stream: Stream::Stderr,
+            kind: NoteKind::RateFallback,
             text: text.into(),
         }
     }
@@ -481,6 +506,13 @@ pub fn plan_picture_upload(path: &Path) -> Result<PicturePlan, MediaError> {
     })
 }
 
+/// The phrase a "too many frames" error is built from.
+///
+/// Public so a caller can recognise the case without matching on prose it does
+/// not own. The TUI adds its own guidance when it sees this, and a reworded
+/// message must not silently drop that.
+pub const TOO_MANY_FRAMES: &str = "more frames than the keyboard can store";
+
 /// Reads a GIF and decides everything about its upload: which frames, at what
 /// rate, and what the user needs to be told about both.
 ///
@@ -508,7 +540,7 @@ pub fn plan_gif_upload(
         .then(|| gif.rate.fallback_reason(rate))
         .flatten()
     {
-        notes.push(Note::err(why));
+        notes.push(Note::rate_fallback(why));
     }
 
     if frame_count < gif.source_count {

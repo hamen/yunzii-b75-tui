@@ -3,6 +3,7 @@ mod exec;
 mod plan;
 mod protocol;
 mod time;
+mod tui;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use device::{Device, DeviceError, ReportIdForm};
@@ -77,8 +78,13 @@ impl From<MediaError> for AppError {
     about = "Native control for the Yunzii B75 Pro Max keyboard's TFT screen"
 )]
 struct Cli {
+    /// Omit to launch the interactive interface.
+    ///
+    /// Optional as of Milestone 5. This is backwards compatible: the
+    /// subcommand used to be required, so no invocation that worked before
+    /// changes meaning.
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 /// clap-facing page selector -- kept separate from `protocol::Page` so
@@ -216,7 +222,28 @@ fn parse_max_frames(s: &str) -> Result<NonZeroUsize, String> {
 
 fn main() {
     let cli = Cli::parse();
-    let result: Result<(), AppError> = match cli.command {
+
+    let Some(command) = cli.command else {
+        // No subcommand: the interactive interface -- but only if there is
+        // someone to be interactive with. Drawing a full-screen UI into a pipe
+        // produces a program that looks hung, which is a worse regression than
+        // the usage error this replaced.
+        if !tui::is_interactive() {
+            eprintln!(
+                "yunzii-b75-tui: no subcommand given, and stdin/stdout is not a terminal.\n\
+                 The interactive interface needs a terminal; run `yunzii-b75-tui --help` for \
+                 the commands."
+            );
+            std::process::exit(2);
+        }
+        if let Err(e) = tui::run() {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    };
+
+    let result: Result<(), AppError> = match command {
         Commands::SetTime { debug_no_prefix } => run_set_time(debug_no_prefix).map_err(Into::into),
         Commands::SwitchPage { page } => run_switch_page(page.into()).map_err(Into::into),
         Commands::ClearPicture => run_clear_picture().map_err(Into::into),
@@ -486,14 +513,17 @@ mod cli_tests {
         let notes = vec![
             Note {
                 stream: Stream::Stderr,
+                kind: plan::NoteKind::Info,
                 text: "a warning".into(),
             },
             Note {
                 stream: Stream::Stdout,
+                kind: plan::NoteKind::Info,
                 text: "a summary".into(),
             },
             Note {
                 stream: Stream::Stderr,
+                kind: plan::NoteKind::Info,
                 text: "another warning".into(),
             },
         ];
@@ -577,7 +607,7 @@ mod cli_tests {
     fn parses_set_time() {
         let cli = Cli::try_parse_from(["yunzii-b75-tui", "set-time"]).unwrap();
         assert!(matches!(
-            cli.command,
+            cli.command.unwrap(),
             Commands::SetTime {
                 debug_no_prefix: false
             }
@@ -588,7 +618,7 @@ mod cli_tests {
     fn parses_switch_page_home() {
         let cli = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", "home"]).unwrap();
         assert!(matches!(
-            cli.command,
+            cli.command.unwrap(),
             Commands::SwitchPage {
                 page: PageArg::Home
             }
@@ -599,7 +629,7 @@ mod cli_tests {
     fn parses_switch_page_picture() {
         let cli = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", "picture"]).unwrap();
         assert!(matches!(
-            cli.command,
+            cli.command.unwrap(),
             Commands::SwitchPage {
                 page: PageArg::Picture
             }
@@ -615,7 +645,7 @@ mod cli_tests {
     #[test]
     fn parses_clear_picture() {
         let cli = Cli::try_parse_from(["yunzii-b75-tui", "clear-picture"]).unwrap();
-        assert!(matches!(cli.command, Commands::ClearPicture));
+        assert!(matches!(cli.command.unwrap(), Commands::ClearPicture));
     }
 
     // Round-2 cross-review (cursor SF2, PR #3): the switch-page cmd-byte
@@ -625,7 +655,7 @@ mod cli_tests {
     fn clear_picture_dispatch_produces_cmd14() {
         const CMD_BYTE_OFFSET: usize = 9;
         let cli = Cli::try_parse_from(["yunzii-b75-tui", "clear-picture"]).unwrap();
-        assert!(matches!(cli.command, Commands::ClearPicture));
+        assert!(matches!(cli.command.unwrap(), Commands::ClearPicture));
         let sequence = protocol::build_clear_picture_sequence();
         assert_eq!(
             sequence[0][CMD_BYTE_OFFSET], 14,
@@ -638,7 +668,7 @@ mod cli_tests {
     #[test]
     fn parses_set_picture_with_a_path() {
         let cli = Cli::try_parse_from(["yunzii-b75-tui", "set-picture", "logo.png"]).unwrap();
-        let Commands::SetPicture { path, dry_run: _ } = cli.command else {
+        let Commands::SetPicture { path, dry_run: _ } = cli.command.unwrap() else {
             panic!("expected SetPicture");
         };
         assert_eq!(path, PathBuf::from("logo.png"));
@@ -743,7 +773,7 @@ mod cli_tests {
             fps,
             max_frames,
             dry_run,
-        } = cli.command
+        } = cli.command.unwrap()
         else {
             panic!("expected SetGif");
         };
@@ -766,7 +796,7 @@ mod cli_tests {
     fn switch_page_gif_is_accepted_and_maps_to_cmd15() {
         const CMD_BYTE_OFFSET: usize = 9;
         let cli = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", "gif"]).unwrap();
-        let Commands::SwitchPage { page } = cli.command else {
+        let Commands::SwitchPage { page } = cli.command.unwrap() else {
             panic!("expected SwitchPage");
         };
         assert!(matches!(page, PageArg::Gif));
@@ -792,7 +822,7 @@ mod cli_tests {
         const CMD_BYTE_OFFSET: usize = 9; // payload = report[7..], cmd = payload[2]
         for (page_name, expected_cmd_byte) in [("home", 11u8), ("picture", 13), ("gif", 15)] {
             let cli = Cli::try_parse_from(["yunzii-b75-tui", "switch-page", page_name]).unwrap();
-            let Commands::SwitchPage { page } = cli.command else {
+            let Commands::SwitchPage { page } = cli.command.unwrap() else {
                 panic!("expected SwitchPage");
             };
             let sequence = protocol::build_page_switch_sequence(page.into());

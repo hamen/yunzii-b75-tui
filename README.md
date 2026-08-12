@@ -41,10 +41,51 @@ switch -- the vendor's GIF save has three modes and every early test used mode
 0 ("set it as the startup animation"), which stores frames somewhere that never
 plays. `set-gif` uses mode 1, and the animation appears immediately.
 
-No `ratatui` screen yet -- CLI-only, done well, though there are finally enough
-commands to justify building one. Sliders and toggles (brightness, chroma,
-saturation, grayscale, "fuzzy", sharpening) aren't implemented; each gets its
-own reverse-engineering pass first, same process as `set-time` below. 🚧
+**🖥️ There's a TUI now.** Run the binary with no subcommand. Sliders and
+toggles (brightness, chroma, saturation, grayscale, "fuzzy", sharpening) aren't
+implemented; each gets its own reverse-engineering pass first, same process as
+`set-time` below. 🚧
+---
+
+## 🖥️ The interface
+
+```bash
+./target/release/yunzii-b75-tui        # no subcommand -> interactive
+```
+
+```
+┌ Yunzii B75 Pro Max ───────────────────────────────────┐
+│ ● /dev/hidraw5                                        │
+├───────────────────────┬───────────────────────────────┤
+│ > Set time            │  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀              │
+│   Show home page      │  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀              │
+│   Show picture page   │  mascot.gif                   │
+│   …                   │  36 frames · 10 fps · ~45s    │
+├───────────────────────┴───────────────────────────────┤
+│ frame 12/36  ████████░░░░░░░░░░░░  33%   ~30s left    │
+└───────────────────────────────────────────────────────┘
+```
+
+Three things the CLI cannot do:
+
+- **A progress bar with a real countdown.** An upload is forty-five seconds of
+  frame lines otherwise.
+- **A preview.** It draws the frame the device will actually receive — after
+  the stretch to 160×96, in half-blocks, two pixels per cell — so you see what
+  the panel will show *before* sending it. Choosing a file only previews it;
+  a second Enter uploads.
+- **Cancel.** Esc stops between reports and during the firmware's own pauses.
+  There is no abort in the protocol, so it warns that the animation is partial.
+
+`←`/`→` on the confirm screen change the frame rate, the same as `--fps`.
+The keyboard is re-scanned every two seconds when it is missing, and the
+header says *why* it is missing — not found, permission denied, or two devices
+matching — because the fix differs each time.
+
+Every subcommand keeps working exactly as before; the subcommand used to be
+required, so nothing that worked changes meaning. With stdin or stdout piped
+the bare command prints help and exits instead of drawing a UI nobody can see.
+
 ---
 
 ## ⚡ Quick start
