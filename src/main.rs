@@ -140,6 +140,10 @@ enum Commands {
     SetPicture {
         /// Path to a PNG or JPEG file.
         path: PathBuf,
+        /// Decode and report what would be sent, then stop without contacting
+        /// the keyboard.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Upload an animated GIF to the TFT screen.
     ///
@@ -164,6 +168,14 @@ enum Commands {
         /// error rather than being silently truncated.
         #[arg(long, value_parser = parse_max_frames)]
         max_frames: Option<NonZeroUsize>,
+        /// Decode and report what would be sent -- frame count, rate, upload
+        /// estimate -- then stop without contacting the keyboard.
+        ///
+        /// Worth having on its own: a 160-frame GIF takes two and a half
+        /// minutes to upload, and this says what rate it would use and how
+        /// long it would take, in under a second.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -208,12 +220,13 @@ fn main() {
         Commands::SetTime { debug_no_prefix } => run_set_time(debug_no_prefix).map_err(Into::into),
         Commands::SwitchPage { page } => run_switch_page(page.into()).map_err(Into::into),
         Commands::ClearPicture => run_clear_picture().map_err(Into::into),
-        Commands::SetPicture { path } => run_set_picture(&path),
+        Commands::SetPicture { path, dry_run } => run_set_picture(&path, dry_run),
         Commands::SetGif {
             path,
             fps,
             max_frames,
-        } => run_set_gif(&path, fps, max_frames),
+            dry_run,
+        } => run_set_gif(&path, fps, max_frames, dry_run),
     };
 
     if let Err(e) = result {
@@ -349,6 +362,7 @@ fn run_set_gif(
     path: &Path,
     fps: Option<u8>,
     max_frames: Option<NonZeroUsize>,
+    dry_run: bool,
 ) -> Result<(), AppError> {
     // Decode, composite and encode before touching the device: this can take a
     // while for a long GIF, and discovering a bad file after 500 writes would
@@ -367,6 +381,11 @@ fn run_set_gif(
     debug_assert!(plan.frames.len() <= plan.source_count);
     debug_assert!(plan.est_secs >= plan.frames.len());
 
+    if dry_run {
+        println!("dry run: the keyboard was not contacted.");
+        return Ok(());
+    }
+
     let dev_path = device::find_device().map_err(AppError::Device)?;
     println!("found device: {}", dev_path.display());
     let dev = Device::open(&dev_path).map_err(AppError::Device)?;
@@ -375,20 +394,19 @@ fn run_set_gif(
 
     // Deliberately NOT set-picture's message: nothing shows that clear-picture
     // clears a half-written GIF, and there is no clear-gif command yet.
-    run_upload(&dev, &dev_path, |cx| exec::execute_gif(&plan, cx), &mut {
-        let mut last_frame = usize::MAX;
-        move |ev| {
-            if let exec::ExecEvent::Progress {
-                phase: exec::Phase::Frame { index, of },
-                ..
-            } = ev
-                && index != last_frame
-            {
-                last_frame = index;
+    run_upload(
+        &dev,
+        &dev_path,
+        |cx| exec::execute_gif(&plan, cx),
+        &mut |ev| {
+            // On FrameDone, not on the frame's first Progress: the old code
+            // printed this after the whole frame was sent, so a failure in the
+            // body meant the line never appeared.
+            if let exec::ExecEvent::FrameDone { index, of } = ev {
                 println!("  frame {}/{of}", index + 1);
             }
-        }
-    })
+        },
+    )
     .map_err(|e| {
         AppError::Device(e.with_note(
             "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it \
@@ -402,12 +420,17 @@ fn run_set_gif(
     Ok(())
 }
 
-fn run_set_picture(path: &Path) -> Result<(), AppError> {
+fn run_set_picture(path: &Path, dry_run: bool) -> Result<(), AppError> {
     // Decode FIRST, before opening the device: a missing or corrupt file
     // should say so, not fail with "device not found" on a machine with no
     // keyboard plugged in.
     let plan = plan::plan_picture_upload(path)?;
     print_notes(&plan.notes);
+
+    if dry_run {
+        println!("dry run: the keyboard was not contacted.");
+        return Ok(());
+    }
 
     let dev_path = device::find_device().map_err(AppError::Device)?;
     println!("found device: {}", dev_path.display());
@@ -577,7 +600,7 @@ mod cli_tests {
     #[test]
     fn parses_set_picture_with_a_path() {
         let cli = Cli::try_parse_from(["yunzii-b75-tui", "set-picture", "logo.png"]).unwrap();
-        let Commands::SetPicture { path } = cli.command else {
+        let Commands::SetPicture { path, dry_run: _ } = cli.command else {
             panic!("expected SetPicture");
         };
         assert_eq!(path, PathBuf::from("logo.png"));
@@ -681,6 +704,7 @@ mod cli_tests {
             path,
             fps,
             max_frames,
+            dry_run,
         } = cli.command
         else {
             panic!("expected SetGif");
@@ -688,6 +712,7 @@ mod cli_tests {
         assert_eq!(path, PathBuf::from("a.gif"));
         assert_eq!(fps, Some(12));
         assert_eq!(max_frames.map(|m| m.get()), Some(40));
+        assert!(!dry_run, "absent unless asked for");
 
         // --max-frames 0 is unrepresentable rather than a runtime check.
         assert!(

@@ -123,6 +123,18 @@ pub enum ExecEvent {
     /// A drain warning or a `YUNZII_DEBUG` line. Never printed here; where it
     /// goes is the caller's decision.
     Note(String),
+    /// Frame `index` is fully on the device: header, declare-size, every block
+    /// and the pause after the last one.
+    ///
+    /// Separate from `Progress` because "which frame is in flight" and "which
+    /// frames are finished" are different questions, and answering the second
+    /// with the first is wrong in the way that matters: the CLI used to print
+    /// the frame number after the whole frame had gone out, so a failure in
+    /// the body meant the number was never printed. Driving that line from
+    /// the first `Progress` of a frame reported it before the body was sent.
+    /// Review caught it; a console diff could not, because the printed lines
+    /// are identical and only their timing differs.
+    FrameDone { index: usize, of: usize },
 }
 
 /// Everything a running upload needs that is not the bytes themselves.
@@ -273,6 +285,11 @@ pub fn execute_gif(plan: &GifPlan, cx: &mut ExecCtx) -> Result<(), DeviceError> 
             send_all(cx, &block, &mut done, total, phase)?;
             pause(cx, protocol::GIF_BLOCK_DELAY_MS)?;
         }
+        // Exactly where the CLI's `println!("  frame i/of")` used to sit.
+        (cx.emit)(ExecEvent::FrameDone {
+            index: i,
+            of: frame_count,
+        });
     }
 
     // Sent one at a time: the vendor sleeps 30 ms BETWEEN the two close
@@ -323,6 +340,9 @@ mod recorder {
         /// Trips this flag once `n` reports have gone out, standing in for a
         /// user pressing Esc part-way through.
         cancel_after: Option<(usize, &'a AtomicBool)>,
+        /// What `drain()` claims to have read. Non-zero stands in for a device
+        /// that had stale reports queued.
+        drain_returns: usize,
     }
 
     impl<'a> Recorder<'a> {
@@ -331,6 +351,15 @@ mod recorder {
                 steps: RefCell::new(Vec::new()),
                 reports: RefCell::new(Vec::new()),
                 cancel_after: None,
+                drain_returns: 0,
+            }
+        }
+
+        /// A device with stale reports queued before every write.
+        pub fn draining(n: usize) -> Self {
+            Self {
+                drain_returns: n,
+                ..Self::new()
             }
         }
 
@@ -359,8 +388,8 @@ mod recorder {
     impl Transport for Recorder<'_> {
         fn drain(&self) -> Result<usize, DeviceError> {
             // A real device drains nothing mid-upload, and zero-read drains
-            // are not recorded, so this matches.
-            Ok(0)
+            // are not recorded, so the default matches.
+            Ok(self.drain_returns)
         }
 
         fn send_report(
@@ -813,5 +842,105 @@ mod tests {
         let start = std::time::Instant::now();
         assert!(SystemClock.sleep_cancellable(Duration::from_millis(120), &never));
         assert!(start.elapsed() >= Duration::from_millis(100));
+    }
+
+    /// The frame line is reported when the frame is *finished*, not when its
+    /// header is acknowledged.
+    ///
+    /// This is the regression codex found in round 1 and the reason
+    /// `FrameDone` exists. A console diff cannot catch it: the printed lines
+    /// are identical either way, and only their position relative to the
+    /// sends differs. So the assertion is on that position.
+    #[test]
+    fn a_frame_is_reported_only_after_its_whole_body_is_sent() {
+        let plan =
+            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
+                .unwrap();
+        let never = AtomicBool::new(false);
+        let rec = Recorder::new();
+        let (result, events) = run_collecting(&rec, &never, &mut |cx| execute_gif(&plan, cx));
+        result.unwrap();
+
+        // Reports sent by the time each FrameDone was emitted.
+        let mut sent = 0usize;
+        let mut done_at = Vec::new();
+        for ev in &events {
+            match ev {
+                ExecEvent::Progress { done, .. } => sent = *done,
+                ExecEvent::FrameDone { index, of } => {
+                    assert_eq!(*of, 2);
+                    done_at.push((*index, sent));
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(done_at.len(), 2, "one per frame");
+        let per_frame = 1 + 1 + protocol::GIF_BLOCKS_PER_FRAME * protocol::GIF_PACKETS_PER_BLOCK;
+        // 2 session-open reports precede frame 0.
+        assert_eq!(
+            done_at[0],
+            (0, 2 + per_frame),
+            "frame 0 is finished only once its header, declare-size and all \
+             {} blocks have gone out",
+            protocol::GIF_BLOCKS_PER_FRAME
+        );
+        assert_eq!(done_at[1], (1, 2 + 2 * per_frame));
+    }
+
+    /// A GIF that fails part-way must not have reported the frame it was on.
+    #[test]
+    fn an_interrupted_frame_is_never_reported_as_done() {
+        let plan =
+            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
+                .unwrap();
+        let cancel = AtomicBool::new(false);
+        // Stop inside frame 0's body: past its header, well before its blocks
+        // are finished.
+        let rec = Recorder::cancelling_after(10, &cancel);
+        let (result, events) = run_collecting(&rec, &cancel, &mut |cx| execute_gif(&plan, cx));
+
+        assert!(matches!(
+            result.expect_err("must stop"),
+            DeviceError::Cancelled { .. }
+        ));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ExecEvent::FrameDone { .. })),
+            "no frame finished, so none may be reported"
+        );
+    }
+
+    /// A drain that reads something becomes a note the caller can show.
+    ///
+    /// This used to be an `eprintln!` inside `device.rs`. Nothing proved it
+    /// still reaches anyone after the move.
+    #[test]
+    fn a_nonzero_drain_becomes_a_note() {
+        let plan = plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let never = AtomicBool::new(false);
+        let rec = Recorder::draining(3);
+        let (result, events) = run_collecting(&rec, &never, &mut |cx| execute_picture(&plan, cx));
+        result.unwrap();
+
+        let notes: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                ExecEvent::Note(m) => Some(m.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes.len(),
+            plan.total_reports,
+            "one warning per report, since this device always has stale data"
+        );
+        assert!(
+            notes[0].contains("drained 3 unexpected report(s)"),
+            "got {:?}",
+            notes[0]
+        );
+        assert!(notes[0].contains("before write #0"), "got {:?}", notes[0]);
     }
 }
