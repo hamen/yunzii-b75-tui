@@ -47,7 +47,7 @@ impl From<MediaError> for AppError {
 /// the supported formats were "PNG and JPEG" -- correct for the other command,
 /// useless advice here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MediaKind {
+enum MediaKind {
     Picture,
     Gif,
 }
@@ -72,7 +72,7 @@ impl MediaKind {
 /// A `set-picture` or `set-gif` failure that happened while reading or
 /// converting the file, i.e. before any HID device was opened.
 #[derive(Debug)]
-pub struct MediaError {
+struct MediaError {
     kind: MediaKind,
     path: PathBuf,
     detail: String,
@@ -469,17 +469,30 @@ fn load_gif_frames(path: &Path, max_frames: Option<NonZeroUsize>) -> Result<GifF
         detail,
     };
 
-    // Pass 1: count frames and collect delays. Nothing is kept, so a huge GIF
-    // costs time rather than memory.
-    let (source_count, delays) = {
-        let mut delays: Vec<u32> = Vec::new();
-        for frame in gif_frames_iter(path)? {
-            let frame = frame.map_err(|e| fail(format!("could not decode a frame: {e}")))?;
-            let (num, den) = frame.delay().numer_denom_ms();
-            delays.push(if den == 0 { 0 } else { num / den });
+    // Pass 1: count the frames and reduce their delays as we go.
+    //
+    // Deliberately NOT collected into a Vec. Only four numbers are ever needed
+    // -- the count, the first delay, whether they are all equal, and the total
+    // -- and a per-frame Vec would grow with the source frame count, which no
+    // limit here bounds. The 64 MiB decoder cap covers a single frame buffer,
+    // not this. Four accumulators make "a huge GIF costs time, not memory"
+    // true rather than nearly true.
+    let mut source_count: usize = 0;
+    let mut first_delay: u32 = 0;
+    let mut all_equal = true;
+    let mut total_delay: u64 = 0;
+    for frame in gif_frames_iter(path)? {
+        let frame = frame.map_err(|e| fail(format!("could not decode a frame: {e}")))?;
+        let (num, den) = frame.delay().numer_denom_ms();
+        let ms = if den == 0 { 0 } else { num / den };
+        if source_count == 0 {
+            first_delay = ms;
+        } else if ms != first_delay {
+            all_equal = false;
         }
-        (delays.len(), delays)
-    };
+        total_delay += ms as u64;
+        source_count += 1;
+    }
 
     if source_count == 0 {
         return Err(fail("it contains no frames".to_string()));
@@ -506,7 +519,7 @@ fn load_gif_frames(path: &Path, max_frames: Option<NonZeroUsize>) -> Result<GifF
 
     // A zero delay is "as fast as possible", which is not a rate the file is
     // actually asking for, so it is treated as variable rather than as 0 fps.
-    let uniform = delays.iter().all(|d| *d == delays[0]) && delays[0] > 0;
+    let uniform = all_equal && first_delay > 0;
     let rate = if uniform {
         // Range-check the exact rate, then round. Rounding first was a bug: a
         // uniform 1500 ms delay is 0.67 fps, which the device cannot store,
@@ -517,16 +530,15 @@ fn load_gif_frames(path: &Path, max_frames: Option<NonZeroUsize>) -> Result<GifF
         // centiseconds, so the only reachable rates above 60 come from a 1 cs
         // delay (100 fps). Nothing lands just outside a bound and rounds back
         // inside it.
-        let fps = 1000.0 / delays[0] as f64;
+        let fps = 1000.0 / first_delay as f64;
         if fps >= protocol::GIF_FPS_MIN as f64 && fps <= protocol::GIF_FPS_MAX as f64 {
             SourceRate::Usable(fps.round() as u8)
         } else {
             SourceRate::OutOfRange(fps)
         }
     } else {
-        let sum: f64 = delays.iter().map(|d| *d as f64).sum();
         SourceRate::Variable {
-            mean_delay_ms: sum / delays.len() as f64,
+            mean_delay_ms: total_delay as f64 / source_count as f64,
         }
     };
 
@@ -1154,15 +1166,20 @@ mod cli_tests {
         // palette grey) would mean the background *index* had been painted
         // instead. Either way the red mark must be gone; that is the point.
         let cleared = gif_px(&gif.frames[1], red_at.0, red_at.1);
-        assert_eq!(
-            cleared, 0x0000,
-            "frame 1 must have been cleared there -- if this is still red \
-             ({:#06x}), disposal was ignored",
-            0xf800
-        );
+
+        // The invariant first, so a failure says which thing broke. If this
+        // one fails, disposal was genuinely ignored.
         assert_ne!(
             cleared, 0xf800,
-            "stated explicitly: the frame 0 mark must not survive disposal"
+            "frame 0's red mark survived into frame 1 -- disposal was ignored"
+        );
+        // Then the exact value, pinning today's pipeline. If ONLY this one
+        // fails, disposal still works and `image` changed how it clears;
+        // update the expectation, do not weaken the assertion above.
+        assert_eq!(
+            cleared, 0x0000,
+            "expected transparent-cleared-to-black; got {cleared:#06x} \
+             (0x8410 would mean the palette background index was painted instead)"
         );
 
         assert_eq!(
@@ -1339,7 +1356,7 @@ mod cli_tests {
     /// not being used, so the fallback note must stay quiet. This is the other
     /// half of the warning contract.
     #[test]
-    fn an_explicit_rate_suppresses_the_fallback_note() {
+    fn an_explicit_rate_suppresses_the_fallback_note_contract_only() {
         for fixture in [
             "fixtures/test-anim-variable-delay.gif",
             "fixtures/test-anim-too-fast.gif",

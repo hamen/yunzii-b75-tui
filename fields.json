@@ -537,7 +537,7 @@
       "decodedDescriptor": "Usage Page 0xFF60, Usage 0x61, Collection(Application): Usage 0x62 Input(count=64,size=8,data/var/abs), Usage 0x63 Output(count=64,size=8,data/var/abs). No Report ID item present -- confirms this is an unnumbered-report interface, consistent with WebHID's reportId:0.",
       "productString": "YUNZII B75 PRO MAX Keyboard",
       "serial": null,
-      "aclConfirmed": "getfacl shows `user:ivan:rw-` on /dev/hidraw5 -- the udev rule (VID 28E9) grants uaccess correctly on this interface, confirmed for all 4 of the device's hidraw nodes on this machine, not just some (an earlier plan-review round had flagged inconsistent ACL as a risk based on partial evidence; re-checked and it's uniform here)."
+      "aclConfirmed": "getfacl shows `user:ivan:rw-` on /dev/hidraw5, the config channel. IMPORTANT -- an earlier revision of this entry recorded 'confirmed for all 4 of the device's hidraw nodes, not just some' as a SUCCESS. That is backwards: interface 0 carries keystrokes, so user-readable access on all 4 nodes is a keylogger, not a healthy state. The repo's rule now matches interface 1 only, verified with `udevadm test` against all four interfaces (1 matches with GROUP plugdev and MODE 0660; 0, 2 and 3 do not). Note the ACLs observed on this machine come from systemd's own 73-seat-late.rules, not from this repo's rule, so seeing access on other interfaces here does not mean the rule is wrong -- check with `udevadm test`, never with getfacl alone."
     },
     "allFourInterfaces": [
       {

@@ -17,8 +17,9 @@
 #       ^^^^^^^^^^                                ^^^^
 #       vendor+product                            interface number
 #
-# Verified with `udevadm test` on the real device: interface 1 matches, and
-# interfaces 0 and 2 do not.
+# Verified with `udevadm test` on the real device, against all four of its
+# interfaces: only interface 1 matches (GROUP plugdev, MODE 0660). Interfaces
+# 0, 2 and 3 do not match.
 #
 # Two access paths on purpose. TAG+="uaccess" covers a normal graphical login;
 # GROUP="plugdev" covers the case where uaccess does not apply. Add yourself:

@@ -321,16 +321,23 @@ the display doesn't switch (needs to be set as "startup animation" first?
 needs a physical button press to cycle screens? something else?) is not
 understood.
 
-**Decision (round 3, codex Blocker)**: shipping `switch-page gif` as a CLI
-command would ship something that sends a correct, ACK'd command but
-doesn't do what its name says — the same half-understood-shipping trap
-"Clear GIF" was already kept out of this milestone for. `Page::Gif` and
-`CMD15_INFO_PAYLOAD` stay in `protocol.rs`, fully resolved and tested, but
-`main.rs`'s `switch-page` CLI only accepts `home`/`picture`. `gif` is now
-a named, evidenced `unresolved` entry in `fields.json`, the same pattern
-as "Clear GIF," for a follow-up milestone to pick up once the missing
-operation is found. *(Milestone 4 found it: the missing operation was
-saving in mode 1. `switch-page gif` ships.)*
+**Decision taken at the time (round 3, codex Blocker)** — since reversed:
+shipping `switch-page gif` as a CLI command would have shipped something
+that sent a correct, ACK'd command but did not do what its name said — the
+same half-understood-shipping trap "Clear GIF" had already been kept out of
+that milestone for. So `Page::Gif` and `CMD15_INFO_PAYLOAD` stayed in
+`protocol.rs`, fully resolved and tested, while `main.rs`'s `switch-page`
+accepted only `home`/`picture`, and `gif` was filed as a named, evidenced
+`unresolved` entry for a later milestone to pick up once the missing
+operation was found.
+
+**Current state, and the end of this thread: Milestone 4 found the missing
+operation.** It was the *save*, not the switch — the GIF had to be stored in
+mode 1. `set-gif` and `switch-page gif` both ship, the `unresolved` entry is
+gone, and cmd15 needed no change of any kind. Nothing above this line
+describes how the tool behaves today; it is kept because the reasoning, and
+the way it reached a confident wrong answer, is worth more than the verdict
+was.
 
 **Whether `clear-picture` leaves a separately-stored GIF untouched is
 still open, but for a smaller reason now.** The blocker described here —
@@ -586,8 +593,16 @@ line: the bound only holds because that value cannot be exceeded.
 Note what these do *not* bound: decoding walks every frame of the source in
 order, even the ones `--max-frames` skips, because a skipped frame still
 mutates the canvas later frames build on. A GIF with a hundred thousand frames
-is slow to read. It is not, however, a memory problem — only the selected
-frames are kept.
+is slow to read.
+
+It is not a memory problem, and that took a second pass to make true. The
+counting pass originally pushed one `u32` delay per source frame into a `Vec`,
+which grows with the source frame count — something neither limit above bounds,
+since the 64 MiB cap covers a single frame buffer. Reviewing this document
+against that code is what caught it: the claim was here before it was earned.
+The pass now keeps four accumulators (count, first delay, all-equal flag, total
+delay), which is everything the rate decision needs, so the statement holds for
+any frame count.
 
 ### Frame construction is delegated, on purpose
 

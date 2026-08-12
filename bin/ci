@@ -30,6 +30,10 @@ echo "==> check-raw-consistency.js"
 node scripts/check-raw-consistency.js
 
 echo
+echo "==> check-fixtures-reproducible.js"
+node scripts/check-fixtures-reproducible.js
+
+echo
 echo "==> cargo fmt --check"
 cargo fmt --check
 
