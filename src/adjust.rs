@@ -679,4 +679,91 @@ mod tests {
             "alternating black and white must average into the middle: {v:?}"
         );
     }
+
+    /// The blur's exact output, so the weights, the edge clamp and the
+    /// two-pass rounding are all pinned rather than described.
+    ///
+    /// A single bright pixel in a 5x1 row. The horizontal pass spreads it by
+    /// the kernel; the vertical pass sees one row, clamps every sample to it,
+    /// and the weights sum to one, so it returns what it was given.
+    #[test]
+    fn blur_produces_exactly_the_specified_kernel() {
+        let mut i = RgbaImage::new(5, 1);
+        for x in 0..5 {
+            i.put_pixel(x, 0, Rgba([if x == 2 { 255 } else { 0 }, 0, 0, 255]));
+        }
+        blur(&mut i);
+
+        // 255 * each weight, rounded: .06136 -> 15.65 -> 16,
+        // .24477 -> 62.4 -> 62, .38774 -> 98.9 -> 99.
+        let got: Vec<u8> = (0..5).map(|x| i.get_pixel(x, 0).0[0]).collect();
+        assert_eq!(got, vec![16, 62, 99, 62, 16]);
+    }
+
+    /// Edge clamping, isolated: a bright pixel in the corner has its missing
+    /// neighbours filled by repeating itself, so it keeps more of its value
+    /// than the same pixel would in the middle.
+    #[test]
+    fn blur_clamps_at_the_edge_rather_than_darkening_it() {
+        let mut edge = RgbaImage::new(5, 1);
+        edge.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+        for x in 1..5 {
+            edge.put_pixel(x, 0, Rgba([0, 0, 0, 255]));
+        }
+        blur(&mut edge);
+
+        // Two taps to its left are clamped back onto itself, so it keeps
+        // three weights instead of one:
+        // 255 * (.06136 + .24477 + .38774) = 176.94 -> 177.
+        assert_eq!(edge.get_pixel(0, 0).0[0], 177);
+        assert!(
+            edge.get_pixel(0, 0).0[0] > 99,
+            "zero padding would have given the 99 a centre pixel gets"
+        );
+    }
+
+    /// Sharpen runs before blur, pinned on an image where the two do not
+    /// commute.
+    ///
+    /// The six-stage test above uses a flat field, where both spatial kernels
+    /// are identities -- so it cannot see this pair swapped. This can.
+    #[test]
+    fn sharpen_runs_before_blur() {
+        let step = || {
+            let mut i = RgbaImage::new(6, 6);
+            for y in 0..6 {
+                for x in 0..6 {
+                    let v = if x < 3 { 20 } else { 200 };
+                    i.put_pixel(x, y, Rgba([v, v, v, 255]));
+                }
+            }
+            i
+        };
+
+        let mut documented = step();
+        Adjustments {
+            sharpen: true,
+            blur: true,
+            ..Adjustments::NONE
+        }
+        .apply(&mut documented);
+
+        let mut by_hand = step();
+        sharpen(&mut by_hand);
+        blur(&mut by_hand);
+        assert_eq!(
+            documented.as_raw(),
+            by_hand.as_raw(),
+            "apply() must sharpen first"
+        );
+
+        let mut reversed = step();
+        blur(&mut reversed);
+        sharpen(&mut reversed);
+        assert_ne!(
+            documented.as_raw(),
+            reversed.as_raw(),
+            "the two orders must be distinguishable, or the test proves nothing"
+        );
+    }
 }

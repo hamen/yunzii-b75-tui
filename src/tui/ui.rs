@@ -204,8 +204,13 @@ fn confirm(f: &mut Frame, area: Rect, pending: &Pending) {
     let selected = pending.row();
     let adj = pending.adjustments();
 
-    let mut lines: Vec<Line> = header.into_iter().map(Line::from).collect();
-    lines.push(Line::from(""));
+    // Controls first, notes after.
+    //
+    // The other way round, a wrapped rate warning could push Sharpen and Blur
+    // off the bottom of an 80x24 terminal while the cursor could still select
+    // them -- rows you can change but cannot see. The notes are reference; the
+    // rows are the thing being operated.
+    let mut lines: Vec<Line> = Vec::new();
 
     for (i, row) in rows.iter().enumerate() {
         let value = match row {
@@ -244,6 +249,10 @@ fn confirm(f: &mut Frame, area: Rect, pending: &Pending) {
 
     lines.push(Line::from(""));
     lines.push(Line::from("Enter to upload · Esc to discard"));
+    lines.push(Line::from(""));
+    for line in header {
+        lines.push(Line::from(line));
+    }
 
     f.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: true }).block(
@@ -674,5 +683,44 @@ mod tests {
             !out.contains("→ rate"),
             "pictures have no frame rate:\n{out}"
         );
+    }
+
+    /// Every control stays visible on a common terminal, even when a wrapped
+    /// warning is competing for the space.
+    ///
+    /// A row the cursor can select but the screen cannot show is worse than a
+    /// missing feature: the user changes something and sees nothing move.
+    #[test]
+    fn all_the_controls_fit_at_eighty_by_twentyfour() {
+        // A GIF whose delays ask for 100 fps, so the planner adds a warning
+        // long enough to wrap in a narrow pane.
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-too-fast.gif"),
+            None,
+            None,
+            &crate::adjust::Adjustments::NONE,
+        )
+        .unwrap();
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(Pending::Gif {
+            path: PathBuf::from("fast.gif"),
+            plan,
+            rate_override: None,
+            adjustments: crate::adjust::Adjustments::NONE,
+            row: 0,
+        }));
+
+        let out = render_at(&a, 80, 24);
+        for label in [
+            "Rate",
+            "Brightness",
+            "Chroma",
+            "Saturation",
+            "Grayscale",
+            "Sharpen",
+            "Blur",
+        ] {
+            assert!(out.contains(label), "{label} is off screen:\n{out}");
+        }
     }
 }
