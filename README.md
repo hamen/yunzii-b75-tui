@@ -53,6 +53,7 @@ own reverse-engineering pass first, same process as `set-time` below. 🚧
 cargo build --release
 sudo cp udev/99-yunzii-b75.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG plugdev "$USER"   # only if the node stays root-only; needs re-login
 # unplug and replug the keyboard, then:
 ./target/release/yunzii-b75-tui set-time
 ./target/release/yunzii-b75-tui switch-page home    # or: picture, gif
@@ -97,11 +98,14 @@ Takes an animated **GIF** and plays it on the panel.
 - Frames are stretched to 160×96 the same way `set-picture` does. GIF frame
   position, transparency and **disposal** are applied, so optimised GIFs — the
   normal kind — work correctly.
-- **`--fps` is literal frames per second**, 1–60. Without it, the GIF's own rate
-  is used when its frame delays are uniform, otherwise 30. The keyboard
-  animates at **one** rate for the whole animation, so a GIF with varying
-  delays cannot be reproduced exactly; the CLI says so and prints the rate it
-  used. A 2-frame GIF at 30 fps strobes — short animations want a low `--fps`.
+- **`--fps` is literal frames per second**, 1–60. Without it, the GIF's own
+  rate is used when its frame delays are uniform **and** land inside 1–60.
+  Otherwise the upload falls back to 30 fps and says why — either the delays
+  vary (and it names the average), or they ask for a rate the keyboard cannot
+  store, such as a 10 ms delay wanting 100 fps or a 1500 ms delay wanting
+  0.67 fps. The keyboard animates at **one** rate for the whole animation, so a
+  GIF with varying delays cannot be reproduced exactly. A 2-frame GIF at 30 fps
+  strobes — short animations want a low `--fps`.
 - **160 frames maximum.** A longer GIF is an error, not a silent truncation.
   `--max-frames N` opts into uploading an evenly sampled subset, and the CLI
   warns that fewer frames at the same rate play faster, suggesting the `--fps`
@@ -119,9 +123,28 @@ through a browser canvas, which cannot be reproduced outside a browser. The
 transport is byte-identical; the pixels are ours. For pixel art the result is
 usually sharper than the vendor's.
 
-The udev rule grants access to **all** of the keyboard's `hidraw`
-interfaces for this VID/PID (there's no finer-grained udev match available),
-not just the one this tool actually uses.
+The udev rule is limited to **interface 1**, the configuration channel this
+tool talks to. That limit is the point: interface 0 is the keyboard itself, so
+a rule matching on VID/PID alone would hand every process running as your user
+a live keylogger. Widening it back to the whole device is a real regression,
+not a convenience.
+
+The rule matches the interface's `modalias`, which looks roundabout and is not.
+Every `ATTRS{...}` in one udev rule must match the **same** parent device, and
+`idVendor` lives on the USB device while `bInterfaceNumber` lives on the USB
+interface below it — so the obvious spelling, combining the two, silently
+matches **nothing at all**. The interface's `modalias` carries the vendor and
+product IDs, which puts both conditions on one parent. Verified with
+`udevadm test` against the real keyboard: of the four interfaces, only
+interface 1 matches.
+
+If the device nodes still come up `root:root` after replugging (the `uaccess`
+tag does not apply on every desktop), add yourself to `plugdev`, then log out
+and back in:
+
+```bash
+sudo usermod -aG plugdev "$USER"
+```
 
 Requires: [Rust](https://rustup.rs) 🦀 **1.88+** (for `bin/ci`'s `cargo` steps too),
 the keyboard connected via USB-C (2.4G dongle / Bluetooth untested), and the

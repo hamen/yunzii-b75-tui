@@ -65,9 +65,15 @@ ID item (confirming the unnumbered-report / `reportId: 0` case) —
 independently matching what WebHID reported, from an entirely different
 vantage point. Its USB interface number is `1`. The product string
 (`YUNZII B75 PRO MAX Keyboard`) matches; the device exposes no serial
-number. `getfacl` confirms the udev rule's ACL correctly grants
-read/write access on all 4 of the device's `hidraw` nodes on this machine,
-not just some.
+number.
+
+Access to those nodes was originally granted on all 4 interfaces, and this
+document used to record that as a success. It was the opposite: interface 0
+carries the keystrokes, so a rule matching the whole device gives any process
+running as the logged-in user a keylogger. The rule now matches interface 1
+alone -- see `udev/99-yunzii-b75.rules`, which also explains the udev
+same-parent constraint that makes the obvious spelling of that rule match
+nothing at all.
 
 Connection mode tested: USB-C cable. 2.4G dongle / Bluetooth not yet tested
 — documented as untested, not assumed to work.
@@ -282,14 +288,23 @@ page, were both a clean no-op (no error). `clear-picture` was visually
 confirmed to remove the picture from the screen, and running it again on
 an already-empty slot was a clean no-op.
 
+> **Superseded by Milestone 4 — read this section as history, not as current
+> state.** The conclusion below ("do not ship `switch-page gif`") was correct
+> for what was known at the time and is wrong now. cmd15 was never at fault:
+> the test GIF had only ever been saved in the vendor's **mode 0**, which
+> stores frames that never play. `switch-page gif` and `set-gif` both ship as
+> of Milestone 4. See [The GIF-page mystery, solved](#the-gif-page-mystery-solved)
+> for the resolution. The investigation is kept because the reasoning — and
+> how it reached a confident wrong answer — is worth more than the verdict.
+
 **"Switch to the GIF page" (cmd15) — investigated in round 2, deferred in
 round 3**: round-1 review (codex Blocker, cursor Should-fix) correctly
 flagged that the round-1 hardware run had no GIF on the device, so a "no
 visible change" result couldn't be distinguished from an actual bug. To
 resolve this properly (not just argue about severity), a real disposable
 test GIF was uploaded to the device via the vendor's own browser tool
-(this repo has no upload command yet — GIF upload is out of scope, see
-`unresolved` below) and saved successfully. Sending cmd15 via this repo's
+(at the time, this repo had no upload command — `set-gif` did not exist
+until Milestone 4) and saved successfully. Sending cmd15 via this repo's
 own builder was then tried **twice** — still no visible change, screen
 stayed on whatever page was already showing. To rule out a bug in this
 repo's own cmd15 bytes as the cause, the SAME "Switch to the GIF page"
@@ -306,23 +321,31 @@ the display doesn't switch (needs to be set as "startup animation" first?
 needs a physical button press to cycle screens? something else?) is not
 understood.
 
-**Decision (round 3, codex Blocker)**: shipping `switch-page gif` as a CLI
-command would ship something that sends a correct, ACK'd command but
-doesn't do what its name says — the same half-understood-shipping trap
-"Clear GIF" was already kept out of this milestone for. `Page::Gif` and
-`CMD15_INFO_PAYLOAD` stay in `protocol.rs`, fully resolved and tested, but
-`main.rs`'s `switch-page` CLI only accepts `home`/`picture`. `gif` is now
-a named, evidenced `unresolved` entry in `fields.json`, the same pattern
-as "Clear GIF," for a follow-up milestone to pick up once the missing
-operation is found.
+**Decision taken at the time (round 3, codex Blocker)** — since reversed:
+shipping `switch-page gif` as a CLI command would have shipped something
+that sent a correct, ACK'd command but did not do what its name said — the
+same half-understood-shipping trap "Clear GIF" had already been kept out of
+that milestone for. So `Page::Gif` and `CMD15_INFO_PAYLOAD` stayed in
+`protocol.rs`, fully resolved and tested, while `main.rs`'s `switch-page`
+accepted only `home`/`picture`, and `gif` was filed as a named, evidenced
+`unresolved` entry for a later milestone to pick up once the missing
+operation was found.
 
-**Whether `clear-picture` leaves a separately-stored GIF untouched
-remains untested** — not specific to `clear-picture`: since the GIF page
-itself cannot be visually reached at all in this environment (the finding
-above), there's no way to visually distinguish "GIF is fine but the page
-just doesn't display" from "GIF got corrupted by clear-picture." This
-gates on resolving the GIF-page-display finding first, not on anything in
-`clear-picture`'s own implementation.
+**Current state, and the end of this thread: the missing operation was found
+while preparing Milestone 3, and Milestone 4 shipped it.** It was the *save*,
+not the switch — the GIF had to be stored in mode 1. `set-gif` and `switch-page gif` both ship, the `unresolved` entry is
+gone, and cmd15 needed no change of any kind. Nothing above this line
+describes how the tool behaves today; it is kept because the reasoning, and
+the way it reached a confident wrong answer, is worth more than the verdict
+was.
+
+**Whether `clear-picture` leaves a separately-stored GIF untouched is
+still open, but for a smaller reason now.** The blocker described here —
+that the GIF page could not be reached at all, so a corrupted GIF and a
+non-displaying page looked identical — is gone: the page displays. A
+Milestone 4 hardware run did confirm the narrower direction, that a
+**picture** upload leaves a stored GIF intact. The reverse, `clear-picture`
+against a stored GIF, has not been run.
 
 **"Clear GIF" is a different, deferred command — not shipped.** It looked
 at first like it might share a handler with "Clear the picture" (the
@@ -546,6 +569,41 @@ One consequence worth knowing: GIF transparency is a single transparent
 *index*, so frames arrive with alpha 0 or 255 and are composited onto opaque
 black. That matches the vendor's black-filled canvas.
 
+### Two resource limits, and why each number
+
+A GIF is an untrusted input: a small file can declare an enormous canvas or an
+enormous frame count. Two bounds keep `set-gif` from turning that into memory
+exhaustion.
+
+**64 MiB decode allocation** (`image::Limits::max_alloc`, set on the decoder
+before any frame is read). This caps what the decoder may allocate for a
+single frame buffer. The largest frame this tool has any use for is one panel,
+160×96 RGBA, which is 61,440 bytes — four orders of magnitude below the limit.
+The headroom is deliberate: source GIFs are routinely far larger than the panel
+and get downscaled, so the limit must not reject ordinary input. It exists to
+stop a decompression bomb, not to enforce a sensible size.
+
+**4.9 MB of encoded frames held at once.** `GIF_MAX_FRAMES` is 160, the
+device's own ceiling, and each encoded frame is `PICTURE_BYTES` = 30,720 bytes
+of RGB565. 160 × 30,720 = 4,915,200 bytes is therefore the worst case the
+frame vector can reach, and it is bounded by the device limit rather than by a
+separate check. This is why `--max-frames` above 160 is refused at the command
+line: the bound only holds because that value cannot be exceeded.
+
+Note what these do *not* bound: decoding walks every frame of the source in
+order, even the ones `--max-frames` skips, because a skipped frame still
+mutates the canvas later frames build on. A GIF with a hundred thousand frames
+is slow to read.
+
+It is not a memory problem, and that took a second pass to make true. The
+counting pass originally pushed one `u32` delay per source frame into a `Vec`,
+which grows with the source frame count — something neither limit above bounds,
+since the 64 MiB cap covers a single frame buffer. Reviewing this document
+against that code is what caught it: the claim was here before it was earned.
+The pass now keeps four accumulators (count, first delay, all-equal flag, total
+delay), which is everything the rate decision needs, so the statement holds for
+any frame count.
+
 ### Frame construction is delegated, on purpose
 
 Real GIFs are optimised: most frames are a small sub-rectangle that only means
@@ -558,9 +616,27 @@ When subsampling with `--max-frames`, **every** frame is still walked in order;
 only the selected ones are encoded. A skipped frame still mutates the canvas
 that later frames build on.
 
-`fixtures/test-anim-disposal.gif` exists to keep this honest: its second frame
-is a 16×12 sub-rectangle at (48,36) with a disposal method, and the test
-asserts the first frame's mark is *still there* in the second.
+Two fixtures keep this honest, and it takes two, because one of them cannot
+fail for the reason its name suggested.
+
+`fixtures/test-anim-disposal.gif` has a second frame that is a 16×12
+sub-rectangle at (48,36), with disposal "do not dispose". The test asserts the
+first frame's mark is still there in the second. That proves **placement and
+composition**: an implementation encoding raw sub-frames would produce a 16×12
+buffer, or stretch a 16×12 blue square across the whole panel. It does **not**
+prove disposal is honoured — "do not dispose" means keep the canvas, which is
+also exactly what a decoder ignoring disposal altogether would do. The test was
+named as though it covered disposal, and reviewing Milestone 4 caught that.
+
+`fixtures/test-anim-disposal-background.gif` is the one that can fail. Frame 0
+is the full canvas with a red mark and disposal **restore to background**, so
+the canvas must be cleared before frame 1 — a small green rectangle elsewhere —
+is drawn. The test asserts the red mark is `0x0000` in frame 1. Ignore
+disposal and it stays red, and the test fails.
+
+Both, along with the delay fixtures behind the frame-rate tests, are built by
+`scripts/make-test-gifs.js`, a dependency-free GIF89a writer. Committed binary
+fixtures that nobody can regenerate are their own kind of unverifiable.
 
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
@@ -572,8 +648,9 @@ hash, USB interface number, ACL — see `fields.json`'s
 checksum variants, the full clock+date payload layout, AND (as of Milestone
 1) the native hidraw write/read byte layout and real ACK count, above.
 **As of Milestone 2**: page-switch bytes for all of home/picture/gif (cmd
-11/13/15) and clear-picture (cmd 14), above — cmd15's bytes are resolved
-even though it's not shipped as a CLI command (see below).
+11/13/15) and clear-picture (cmd 14), above. cmd15's bytes were resolved here
+and were correct all along; Milestone 2 withheld it as a CLI command for
+reasons Milestone 4 disproved, and it ships now.
 
 **As of Milestone 3**: the full picture-upload format (cmd16 start, cmd12
 declare-size, the bulk packet layout, and the RGB565 pixel encoding), plus the
