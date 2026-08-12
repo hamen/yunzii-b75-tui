@@ -425,8 +425,16 @@ impl SourceRate {
         match self {
             SourceRate::Usable(_) => None,
             SourceRate::OutOfRange(wanted) => Some(format!(
-                "note: this GIF's delays ask for about {wanted:.0} fps, outside the {}-{} fps \
+                // Two decimals, not zero: a sub-1 fps rate printed as "{:.0}"
+                // reads as "1 fps", which is the very confusion this arm exists
+                // to prevent.
+                "note: this GIF's delays ask for about {} fps, outside the {}-{} fps \
                  the keyboard can store. Using {chosen} fps.",
+                if wanted < 1.0 {
+                    format!("{wanted:.2}")
+                } else {
+                    format!("{wanted:.0}")
+                },
                 protocol::GIF_FPS_MIN,
                 protocol::GIF_FPS_MAX
             )),
@@ -500,9 +508,18 @@ fn load_gif_frames(path: &Path, max_frames: Option<NonZeroUsize>) -> Result<GifF
     // actually asking for, so it is treated as variable rather than as 0 fps.
     let uniform = delays.iter().all(|d| *d == delays[0]) && delays[0] > 0;
     let rate = if uniform {
-        let fps = (1000.0 / delays[0] as f64).round();
+        // Range-check the exact rate, then round. Rounding first was a bug: a
+        // uniform 1500 ms delay is 0.67 fps, which the device cannot store,
+        // but it rounded to 1 and passed the check as if the file had asked
+        // for 1 fps -- a 50% speed error, reported as an exact match.
+        //
+        // Rounding after the check is safe because GIF delays are whole
+        // centiseconds, so the only reachable rates above 60 come from a 1 cs
+        // delay (100 fps). Nothing lands just outside a bound and rounds back
+        // inside it.
+        let fps = 1000.0 / delays[0] as f64;
         if fps >= protocol::GIF_FPS_MIN as f64 && fps <= protocol::GIF_FPS_MAX as f64 {
-            SourceRate::Usable(fps as u8)
+            SourceRate::Usable(fps.round() as u8)
         } else {
             SourceRate::OutOfRange(fps)
         }
@@ -1084,7 +1101,8 @@ mod cli_tests {
         );
         assert!(
             f1_red > 0xf000,
-            "frame 1 must STILL be red there -- that is disposal being applied; got {f1_red:#06x}"
+            "frame 1 must STILL be red there -- the sub-rectangle was composed onto \
+             the previous canvas rather than replacing it; got {f1_red:#06x}"
         );
         // The blue mark exists only in frame 1; frame 0 is the grey background
         // there (rgb(128,128,128) -> 0x8410).
@@ -1127,11 +1145,24 @@ mod cli_tests {
             0xf800,
             "frame 0 should be red there"
         );
+        // Black, not the fixture's grey background index. "Restore to
+        // background" is implemented as "clear to transparent" by `image` --
+        // the same choice browsers make, since the GIF spec's background
+        // colour is widely ignored in favour of transparency -- and
+        // `flatten_onto_black` then composites that transparency onto black.
+        // So 0x0000 is the correct post-pipeline value, and 0x8410 (the
+        // palette grey) would mean the background *index* had been painted
+        // instead. Either way the red mark must be gone; that is the point.
+        let cleared = gif_px(&gif.frames[1], red_at.0, red_at.1);
         assert_eq!(
-            gif_px(&gif.frames[1], red_at.0, red_at.1),
-            0x0000,
-            "frame 1 must have been cleared to the background there -- if this is \
-             still red, disposal was ignored"
+            cleared, 0x0000,
+            "frame 1 must have been cleared there -- if this is still red \
+             ({:#06x}), disposal was ignored",
+            0xf800
+        );
+        assert_ne!(
+            cleared, 0xf800,
+            "stated explicitly: the frame 0 mark must not survive disposal"
         );
 
         assert_eq!(
@@ -1268,6 +1299,132 @@ mod cli_tests {
         for m in [picture, gif] {
             assert!(m.contains("The keyboard was not contacted."), "got: {m}");
         }
+    }
+
+    /// Delays slower than 1 fps must not round up into the valid range.
+    ///
+    /// This is the bug this fixture exists for: `(1000.0 / 1500.0).round()` is
+    /// 1, so a 0.67 fps GIF passed the range check as though the file had
+    /// asked for exactly 1 fps -- a 50% speed error reported as an exact
+    /// match. Range-checking before rounding is what makes it `OutOfRange`.
+    #[test]
+    fn delays_below_one_fps_are_out_of_range_not_rounded_up() {
+        let gif = load_gif_frames(Path::new("fixtures/test-anim-too-slow.gif"), None).unwrap();
+
+        match gif.rate {
+            SourceRate::OutOfRange(wanted) => {
+                assert!(
+                    (wanted - 0.666_666).abs() < 0.01,
+                    "should have asked for ~0.67 fps, got {wanted}"
+                );
+            }
+            SourceRate::Usable(f) => panic!(
+                "0.67 fps was rounded up to {f} and accepted -- the range check \
+                 is happening after the rounding again"
+            ),
+            other => panic!("expected an out-of-range rate, got {other:?}"),
+        }
+
+        let why = gif
+            .rate
+            .fallback_reason(gif.rate.or_default())
+            .expect("below the floor must be explained");
+        assert!(
+            why.contains("0.67"),
+            "a sub-1 rate must not be printed as \"1\"; got: {why}"
+        );
+    }
+
+    /// An explicit `--fps` means the user already knows the file's own rate is
+    /// not being used, so the fallback note must stay quiet. This is the other
+    /// half of the warning contract.
+    #[test]
+    fn an_explicit_rate_suppresses_the_fallback_note() {
+        for fixture in [
+            "fixtures/test-anim-variable-delay.gif",
+            "fixtures/test-anim-too-fast.gif",
+            "fixtures/test-anim-too-slow.gif",
+        ] {
+            let gif = load_gif_frames(Path::new(fixture), None).unwrap();
+
+            // With no --fps the note is printed...
+            assert!(
+                gif.rate.fallback_reason(gif.rate.or_default()).is_some(),
+                "{fixture} should warn when the rate is not chosen explicitly"
+            );
+
+            // ...and `run_set_gif` gates that call on `fps.is_none()`, which is
+            // the condition mirrored here.
+            let explicit: Option<u8> = Some(24);
+            let note = explicit
+                .is_none()
+                .then(|| gif.rate.fallback_reason(24))
+                .flatten();
+            assert!(
+                note.is_none(),
+                "{fixture} must stay quiet when --fps was given; got: {note:?}"
+            );
+        }
+    }
+
+    /// A GIF that decodes to no frames must be a clean error, not a panic.
+    ///
+    /// The rate calculation indexes `delays[0]`, so an empty delay list would
+    /// panic if the zero-frame guard above it were ever removed.
+    #[test]
+    fn a_gif_with_no_frames_is_a_clean_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.gif");
+        // A valid GIF89a header and trailer, with no image blocks at all.
+        std::fs::write(
+            &path,
+            [
+                b'G', b'I', b'F', b'8', b'9', b'a', 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x3b,
+            ],
+        )
+        .unwrap();
+
+        let err = load_gif_frames(&path, None).expect_err("no frames must not succeed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("as an animation"),
+            "must be reported as a GIF problem; got: {msg}"
+        );
+        assert!(
+            msg.contains("The keyboard was not contacted."),
+            "got: {msg}"
+        );
+    }
+
+    /// The bound must be enforced by clap itself, not only by the parser
+    /// function -- a value parser that is never wired up rejects nothing.
+    #[test]
+    fn clap_rejects_out_of_range_max_frames_end_to_end() {
+        let ok = Cli::try_parse_from(["yunzii-b75-tui", "set-gif", "a.gif", "--max-frames", "160"]);
+        assert!(ok.is_ok(), "160 is the device limit and must be accepted");
+
+        for bad in ["161", "0", "99999"] {
+            let parsed =
+                Cli::try_parse_from(["yunzii-b75-tui", "set-gif", "a.gif", "--max-frames", bad]);
+            let msg = match parsed {
+                Ok(_) => panic!("clap must reject --max-frames {bad}"),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                msg.contains("max-frames"),
+                "the error should name the option; got: {msg}"
+            );
+        }
+
+        // The same for --fps, so both parsers are proven to be wired in.
+        assert!(
+            Cli::try_parse_from(["yunzii-b75-tui", "set-gif", "a.gif", "--fps", "61"]).is_err(),
+            "61 fps is above the device limit"
+        );
+        assert!(
+            Cli::try_parse_from(["yunzii-b75-tui", "set-gif", "a.gif", "--fps", "60"]).is_ok(),
+            "60 fps is the limit itself"
+        );
     }
 
     #[test]

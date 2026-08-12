@@ -312,6 +312,25 @@ const built = [];
   built.push([name, n, 'uniform 10 ms -> 100 fps, out of range']);
 }
 
+// 6. Uniform delays slower than the device's floor.
+//    150 cs is 1500 ms, which is 0.67 fps -- below the 1 fps minimum. This is
+//    the case that used to round UP to 1 and pass as an exact match.
+{
+  const W = 32;
+  const H = 32;
+  const name = 'test-anim-too-slow.gif';
+  const n = writeGif(path.join(FIX, name), {
+    width: W,
+    height: H,
+    palette: PALETTE,
+    frames: [
+      { left: 0, top: 0, width: W, height: H, indices: solid(W, H, 1), delayCs: 150, disposal: 1 },
+      { left: 0, top: 0, width: W, height: H, indices: solid(W, H, 2), delayCs: 150, disposal: 1 },
+    ],
+  });
+  built.push([name, n, 'uniform 1500 ms -> 0.67 fps, below the floor']);
+}
+
 for (const [name, size, why] of built) {
   console.log(`  wrote fixtures/${name}  (${size} bytes) -- ${why}`);
 }

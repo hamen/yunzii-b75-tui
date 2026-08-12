@@ -1,13 +1,26 @@
 # Yunzii B75 Pro Max -- access to the configuration channel only.
 #
 # The keyboard exposes four HID interfaces. Interface 0 carries the keystrokes:
-# a rule that matches on VID/PID alone hands every process running as the
-# logged-in user a live keylogger. Match bInterfaceNumber=="01" so only the
-# configuration channel (usage page 0xFF60, usage 0x61) is reachable.
+# a rule matching on VID/PID alone hands every process running as the logged-in
+# user a live keylogger. Only interface 1 (usage page 0xFF60, usage 0x61) is
+# needed, so only interface 1 is granted.
 #
-# Two access paths on purpose. TAG+="uaccess" covers a normal graphical login.
-# GROUP="plugdev" covers the case where uaccess does not apply -- on at least
-# one Ubuntu/XFCE machine the tag alone left the nodes root:root and the vendor
-# tool could not open them either. Add yourself to plugdev if you need it:
+# Why `modalias` and not the obvious `ATTRS{idVendor}` + `ATTRS{bInterfaceNumber}`:
+# every ATTRS/KERNELS/SUBSYSTEMS condition in a single udev rule must match the
+# SAME parent device. `idVendor` and `idProduct` live on the USB *device*, while
+# `bInterfaceNumber` lives on the USB *interface* one level down -- so combining
+# them produces a rule that silently matches nothing at all. The interface's own
+# `modalias` carries the vendor and product IDs, which puts both conditions on
+# one parent:
+#
+#   usb:v28E9p31C8d0109dc00dsc00dp00ic03isc00ip00in01
+#       ^^^^^^^^^^                                ^^^^
+#       vendor+product                            interface number
+#
+# Verified with `udevadm test` on the real device: interface 1 matches, and
+# interfaces 0 and 2 do not.
+#
+# Two access paths on purpose. TAG+="uaccess" covers a normal graphical login;
+# GROUP="plugdev" covers the case where uaccess does not apply. Add yourself:
 #   sudo usermod -aG plugdev "$USER"   # then log out and back in
-KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="28e9", ATTRS{idProduct}=="31c8", ATTRS{bInterfaceNumber}=="01", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{modalias}=="usb:v28E9p31C8*", ATTRS{bInterfaceNumber}=="01", MODE="0660", GROUP="plugdev", TAG+="uaccess"

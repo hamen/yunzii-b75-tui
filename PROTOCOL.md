@@ -65,9 +65,15 @@ ID item (confirming the unnumbered-report / `reportId: 0` case) —
 independently matching what WebHID reported, from an entirely different
 vantage point. Its USB interface number is `1`. The product string
 (`YUNZII B75 PRO MAX Keyboard`) matches; the device exposes no serial
-number. `getfacl` confirms the udev rule's ACL correctly grants
-read/write access on all 4 of the device's `hidraw` nodes on this machine,
-not just some.
+number.
+
+Access to those nodes was originally granted on all 4 interfaces, and this
+document used to record that as a success. It was the opposite: interface 0
+carries the keystrokes, so a rule matching the whole device gives any process
+running as the logged-in user a keylogger. The rule now matches interface 1
+alone -- see `udev/99-yunzii-b75.rules`, which also explains the udev
+same-parent constraint that makes the obvious spelling of that rule match
+nothing at all.
 
 Connection mode tested: USB-C cable. 2.4G dongle / Bluetooth not yet tested
 — documented as untested, not assumed to work.
@@ -297,8 +303,8 @@ flagged that the round-1 hardware run had no GIF on the device, so a "no
 visible change" result couldn't be distinguished from an actual bug. To
 resolve this properly (not just argue about severity), a real disposable
 test GIF was uploaded to the device via the vendor's own browser tool
-(this repo has no upload command yet — GIF upload is out of scope, see
-`unresolved` below) and saved successfully. Sending cmd15 via this repo's
+(at the time, this repo had no upload command — `set-gif` did not exist
+until Milestone 4) and saved successfully. Sending cmd15 via this repo's
 own builder was then tried **twice** — still no visible change, screen
 stayed on whatever page was already showing. To rule out a bug in this
 repo's own cmd15 bytes as the cause, the SAME "Switch to the GIF page"
@@ -627,8 +633,9 @@ hash, USB interface number, ACL — see `fields.json`'s
 checksum variants, the full clock+date payload layout, AND (as of Milestone
 1) the native hidraw write/read byte layout and real ACK count, above.
 **As of Milestone 2**: page-switch bytes for all of home/picture/gif (cmd
-11/13/15) and clear-picture (cmd 14), above — cmd15's bytes are resolved
-even though it's not shipped as a CLI command (see below).
+11/13/15) and clear-picture (cmd 14), above. cmd15's bytes were resolved here
+and were correct all along; Milestone 2 withheld it as a CLI command for
+reasons Milestone 4 disproved, and it ships now.
 
 **As of Milestone 3**: the full picture-upload format (cmd16 start, cmd12
 declare-size, the bulk packet layout, and the RGB565 pixel encoding), plus the

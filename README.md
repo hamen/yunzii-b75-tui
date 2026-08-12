@@ -53,6 +53,7 @@ own reverse-engineering pass first, same process as `set-time` below. 🚧
 cargo build --release
 sudo cp udev/99-yunzii-b75.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG plugdev "$USER"   # only if the node stays root-only; needs re-login
 # unplug and replug the keyboard, then:
 ./target/release/yunzii-b75-tui set-time
 ./target/release/yunzii-b75-tui switch-page home    # or: picture, gif
@@ -122,8 +123,17 @@ usually sharper than the vendor's.
 The udev rule is limited to **interface 1**, the configuration channel this
 tool talks to. That limit is the point: interface 0 is the keyboard itself, so
 a rule matching on VID/PID alone would hand every process running as your user
-a live keylogger. Match `ATTRS{bInterfaceNumber}=="01"` and keep it that way —
-widening it back to the whole device is a real regression, not a convenience.
+a live keylogger. Widening it back to the whole device is a real regression,
+not a convenience.
+
+The rule matches the interface's `modalias`, which looks roundabout and is not.
+Every `ATTRS{...}` in one udev rule must match the **same** parent device, and
+`idVendor` lives on the USB device while `bInterfaceNumber` lives on the USB
+interface below it — so the obvious spelling, combining the two, silently
+matches **nothing at all**. The interface's `modalias` carries the vendor and
+product IDs, which puts both conditions on one parent. Verified with
+`udevadm test` against the real keyboard: interface 1 matches, interfaces 0 and
+2 do not.
 
 If the device nodes still come up `root:root` after replugging (the `uaccess`
 tag does not apply on every desktop), add yourself to `plugdev`, then log out
