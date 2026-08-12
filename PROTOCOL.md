@@ -7,10 +7,14 @@ with zero-padding computed programmatically, never hand-typed, after an
 earlier version of this file had a real transcription bug in the padding).
 `fixtures/raw/*.json` are minimally processed capture logs;
 `scripts/check-raw-consistency.js` (part of `bin/ci`) asserts each of
-`fixtures/cap1.json`, `fixtures/page-switch.json`, and
-`fixtures/clear-picture.json` matches its own raw log byte-for-byte, in
-exact order, so the decode is checked against real captured evidence, not
-only against itself. Capture tooling:
+`fixtures/cap1.json`, `fixtures/page-switch.json`,
+`fixtures/clear-picture.json`, `fixtures/picture-upload.json` and
+`fixtures/gif-upload.json` matches its own raw log byte-for-byte, in exact
+order, so the decode is checked against real captured evidence, not only
+against itself. The picture-upload fixture is the strongest of the five: it is
+regenerated from its source image through the model, so that check is
+model-versus-hardware rather than file-versus-copy. The gif-upload fixture is a
+labelled hybrid -- see its section below. Capture tooling:
 `scripts/capture-hook.js`, `scripts/verify-checksums.js`,
 `scripts/vendor-source-excerpt.js`, `scripts/check-coverage.js`,
 `scripts/check-raw-consistency.js` (all three checks run in `bin/ci`).
@@ -83,29 +87,21 @@ The vendor's own opcode table (`scripts/vendor-source-excerpt.js`):
 Every 64-byte report — the exact layout differs slightly by opcode (see
 `fields.json`, the source of truth this table is generated from):
 
-```
-0x41 / 0x42:
-offset  0  : opcode (0x41 / 0x42)
-offset  1-2: 0x00 0x00 (reserved)
-offset  3  : length (of the payload that follows)
-offset  4  : checksum8
-offset  5  : 0x00 (reserved)
-offset  6  : status -- 0x00 outbound, 0x55 in the device's ACK
-offset  7-63: payload (length bytes), then 0x00 padding
+One layout, all three opcodes:
 
-0x40 (no reserved byte between the checksum and status -- the checksum is
-2 bytes wide here, occupying what would otherwise be the reserved slot):
-offset  0  : opcode (0x40)
-offset  1-2: 0x00 0x00 (reserved)
+```
+offset  0  : opcode (0x40 / 0x41 / 0x42)
+offset  1-2: data offset, u16 little-endian
 offset  3  : length (of the payload that follows)
 offset  4-5: checksum16, little-endian [low byte, high byte]
 offset  6  : status -- 0x00 outbound, 0x55 in the device's ACK
 offset  7-63: payload (length bytes), then 0x00 padding
 ```
 
-Offsets 1-2 are the **data offset** for picture-upload bulk packets, and
-zero for every other command. Earlier phases called them "reserved" — see
-the checksum correction below.
+Offsets 1-2 are zero for every command except bulk pixel data, where they
+carry the data offset -- continuous across the frame for picture upload,
+restarting every 1024 bytes for GIF. Earlier phases described these two bytes
+as reserved and split the checksum by opcode; see the correction below.
 
 **Report size is 64 bytes.** Worth stating because the vendor's JavaScript
 builds a **63**-byte array and calls `sendReport(0, data)`: Chrome then
@@ -444,6 +440,128 @@ colours cannot distinguish any of those things.
 | Does upload switch pages? | panel left on the home page | **Yes** — the clock stayed up during the upload and the image appeared when it finished. No `switch-page picture` needed. |
 | `switch-page` still works after | `switch-page home` between uploads | Clock and battery returned normally |
 
+## GIF upload — resolved (Milestone 4)
+
+`yunzii-b75-tui set-gif <file.gif> [--fps N] [--max-frames N]`. 1149 reports
+for a 2-frame GIF.
+
+```
+infoPackage(0x40, cmd18)   open session   [.., mode, 0]
+dataPacket (0x41, cmd19)   open session   [.., mode, 0]
+   ── per frame ──
+   dataPacket(0x41, cmd16)  frame header  [.., 2, mode, frameIndex]
+   dataPacket(0x41, cmd17)  declare 30720 bytes
+   30 x (1024-byte block -> 19 bulk packets)
+dataPacket(0x41, cmd18)    close session  [.., mode, FRAME COUNT]
+dataPacket(0x41, cmd19)    close session  [.., mode, FPS]
+finish(0x42)
+```
+
+`2 + frames × (2 + 30 × 19) + 2 + 1`, which is 1149 for two frames — exactly
+the captured count.
+
+**Opcode quirk, preserved deliberately:** the *opening* cmd18 goes out as an
+info package (`0x40`); everything else in the transaction, the *closing* cmd18
+included, is a data packet (`0x41`). Milestone 2's "Clear GIF" capture sent
+both as `0x40`, so those samples are a different sequence and not a
+cross-check for these.
+
+**The inner CRC does not cover the trailer.** `ga()` is computed over the fixed
+`[cmd, 0, len]` triple only. The mode, frame index, frame count and rate bytes
+sit after it and are covered by the outer 16-bit checksum like any other
+payload byte. Folding them into `ga()` is an easy mistake.
+
+### Offsets restart every 1024 bytes — the one real difference from pictures
+
+Picture upload runs a single continuous offset, 0 … 30688, across the whole
+frame. **GIF does not.** Each frame is pushed one 1024-byte block at a time,
+and each block is chunked independently, so the offset field **restarts at 0
+for every block** and never reaches 1024.
+
+```
+1024 = 18 × 56 + 16   → 19 packets per block, the last declaring 16 bytes
+30720 / 1024 = 30 blocks per frame
+```
+
+Milestone 3's text said GIF "reuses the same 56-byte bulk packets". True of the
+packet *format*, misleading about the chunker. The two builders are kept
+separate in `protocol.rs` on purpose, and
+`gif_offsets_are_block_relative_unlike_picture_uploads_continuous_run` fails if
+anyone unifies them.
+
+### Modes
+
+| Mode | Vendor button | Max frames | Frame size | Shipped |
+|---|---|---|---|---|
+| 0 | Set it as the startup animation | 64 | 160×96 | no |
+| **1** | **Save to the device** | **160** | 160×96 | **yes** |
+| 2 | Save GIF to the device home page | 42 | 96×64 | no |
+
+Mode 0 is the one that cost Milestone 2 a round of investigation: it stores
+frames somewhere that never plays. Mode 2's button renders only for product ID
+12463 (this keyboard is 12744) — a UI gate, not a wire one, but it is a
+different frame size for a device we do not have.
+
+### Frame rate
+
+One rate for the whole animation, sent once as the last byte of the closing
+cmd19. Slider range 1–60, default 30. **It is literal frames per second**, so a
+2-frame GIF at 30 fps strobes; short animations want a low `--fps`.
+
+### Host sleeps — every gap, including the ones that are zero
+
+| Position | Sleep |
+|---|---|
+| open cmd18 → open cmd19 | none |
+| after open cmd19 | 30 ms |
+| after each frame's cmd16 | **3000 ms when `frameIndex % 16 == 0`** (0-based), else 30 ms |
+| cmd17 → first block | none |
+| after **every** 1024-byte block, last included | 30 ms |
+| last block → next frame's cmd16 | none |
+| after each of the two close reports | 30 ms |
+| before `finish` | **500 ms** |
+
+The 3000 ms is almost certainly a flash-write pause. None of these are tuned.
+
+### Honest limit: pixel bytes are ours, not the vendor's
+
+Milestone 3 could claim zero mismatches against the vendor's own bytes for the
+whole picture upload. **That claim is not available here, and this section
+exists so nobody assumes it is.**
+
+The vendor's GIF frame pipeline is not its picture pipeline: per frame it runs
+a three-stage canvas downscale (3× → 1.5× → 1×) with smoothing on, onto a
+black-filled canvas, then an edge-aware filter. Browser resampling is
+implementation-defined and not reproducible outside a browser.
+
+So this repo converts frames its own way — the same nearest-neighbour path
+`set-picture` uses, so the two commands agree with each other. What *is*
+verified byte-for-byte against the capture is everything that can break the
+device: framing, ordering, block boundaries, per-block offsets, length bytes
+and every checksum. `fixtures/gif-upload.json` is a labelled **hybrid** — model
+-generated control and chunking, captured pixel bytes — and says so in its own
+provenance note.
+
+One consequence worth knowing: GIF transparency is a single transparent
+*index*, so frames arrive with alpha 0 or 255 and are composited onto opaque
+black. That matches the vendor's black-filled canvas.
+
+### Frame construction is delegated, on purpose
+
+Real GIFs are optimised: most frames are a small sub-rectangle that only means
+anything once composed onto what came before, using the file's disposal method
+and transparent index. This repo does not hand-roll that — `image`'s
+`into_frames()` applies position, transparency and disposal and yields
+full-canvas frames.
+
+When subsampling with `--max-frames`, **every** frame is still walked in order;
+only the selected ones are encoded. A skipped frame still mutates the canvas
+that later frames build on.
+
+`fixtures/test-anim-disposal.gif` exists to keep this honest: its second frame
+is a 16×12 sub-rectangle at (48,36) with a disposal method, and the test
+asserts the first frame's mark is *still there* in the second.
+
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
 **Resolved** — every transmit-required field for "Update device time": HID op
@@ -458,58 +576,48 @@ checksum variants, the full clock+date payload layout, AND (as of Milestone
 even though it's not shipped as a CLI command (see below).
 
 **As of Milestone 3**: the full picture-upload format (cmd16 start, cmd12
-declare-size, the bulk packet layout, and the RGB565 pixel encoding), plus
-the checksum correction above. Also resolved, though not shipped: **why
-cmd15 appeared not to switch to the GIF page** — see below.
+declare-size, the bulk packet layout, and the RGB565 pixel encoding), plus the
+checksum correction above.
+
+**As of Milestone 4**: GIF upload end to end -- the cmd18/cmd19 session pair
+and what their trailing bytes mean, the per-frame cmd16/cmd17 headers, the
+1024-byte block chunking with its restarting offsets, the mode table, and the
+frame-rate byte. `switch-page gif` ships too; it was correct all along.
 
 **Unresolved** (named, not silently missing): the numeric meaning of the
 `finish` command's constant length byte (`0x38`); whether `clear-picture`
-affects a stored GIF; the 2.4 GHz dongle and Bluetooth connection modes; any
-connect/init traffic before the first command. GIF upload is **decoded but
-not implemented** — that is a milestone, not an unknown.
+affects a stored GIF; GIF save modes 0 and 2, decoded but never exercised; the
+2.4 GHz dongle and Bluetooth connection modes; any connect/init traffic before
+the first command.
 
 ### The GIF-page mystery, solved
 
 Milestone 2 recorded that "switch to the GIF page" (cmd15) did not visibly
-switch the panel, even though its bytes were proven identical to the
-vendor's own button, and left it open.
+switch the panel, even though its bytes were proven identical to the vendor's
+own button, and left it open.
 
-cmd15 was never the problem. Reading the vendor bundle showed its GIF save
-is not one action but **three modes**, selected by a byte Milestone 2 had
-recorded as a fixed `0x00`:
+cmd15 was never the problem. The vendor's GIF save has **three modes** (see the
+table above), and every test before Milestone 3 used **mode 0**, which stores
+frames somewhere that never plays -- not on the GIF page, and not at power-up
+either (tested by replugging: the panel comes back to the home screen).
+Re-saving with **mode 1** makes the GIF play immediately. There was simply
+nothing on the GIF page to show.
 
-| Mode | Button | Max frames | Size |
-|---|---|---|---|
-| 0 | Set it as the startup animation | 64 | 160×96 |
-| 1 | Save to the device | 160 | 160×96 |
-| 2 | Save GIF to the device home page | 42 | 96×64 |
-
-Mode 2's button only renders when the product ID is `12463`; this keyboard
-is `12744`, so the vendor's UI hides it. Nothing on the wire enforces that.
-
-Every earlier attempt used **mode 0**, which stores the frames somewhere
-that never plays — not on the GIF page, and not at power-up either (tested:
-after a replug the panel shows the home screen). Re-saving the same GIF with
-**mode 1** makes it play on the TFT immediately. There was simply nothing on
-the GIF page to show.
-
-This also re-labels cmd18/cmd19. They are not "Clear GIF": they are GIF
-session **open** and **close**, and their trailing bytes are parameters —
-the closing pair carries the frame count and the frame rate (a 2-frame save
-at 30 fps closes with `0x02` and `0x1e`). Between them the vendor sends, per
-frame, cmd16 with a frame index, cmd17 declaring 30720 bytes, and then the
-same 56-byte bulk packets this milestone implements.
+That also re-labelled cmd18/cmd19: they are GIF session **open** and **close**,
+and their "unexplained trailing bytes" are the mode, the frame count and the
+frame rate. Milestone 4 implements them.
 
 ## What's next
 
-Milestones 1-3 ship `set-time`, `switch-page home`/`picture`,
-`clear-picture`, and `set-picture` — see `README.md`.
+Milestones 1-4 ship `set-time`, `switch-page home`/`picture`/`gif`,
+`clear-picture`, `set-picture` and `set-gif` -- see `README.md`.
 
-**GIF upload is the natural next milestone**, and it is mostly built
-already: a GIF frame is exactly one picture frame, so it reuses
-`rgb565_encode` and the bulk chunker unchanged and adds only the per-frame
-cmd16/cmd17 pair and the cmd18/cmd19 session wrapper with mode 1. After
-that: sliders and toggles (brightness, chroma, saturation, grayscale,
-"fuzzy", sharpening), the vendor's "in the middle" vs "cover up completely"
-placement setting, and a `ratatui` screen once there is more than one action
-worth navigating between.
+What is left: the sliders and toggles (brightness, chroma, saturation,
+grayscale, "fuzzy", sharpening), the vendor's "in the middle" vs "cover up
+completely" placement setting, a `clear-gif` command if one exists, and the
+`ratatui` screen this repo is named after -- which is now worth building, since
+there are finally more actions than a flat CLI wants to carry.
+
+Each still needs its own discovery pass, same process as this document. The
+generic opcode / checksum / report-structure model carries over directly; only
+the per-command payload layout differs.

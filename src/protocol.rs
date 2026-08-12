@@ -63,26 +63,19 @@ pub const CMD15_INFO_PAYLOAD: [u8; 7] = [165, 90, 15, 0, 0, 195, 65];
 /// than a raw `u8` command byte, so an invalid page value is unrepresentable
 /// instead of a runtime check.
 ///
-/// `Gif`'s wire bytes (`CMD15_INFO_PAYLOAD`) are resolved and correct, and
-/// `main.rs`'s CLI still does not expose a way to construct `Page::Gif` --
-/// but the REASON changed in Milestone 3, so the old one is not repeated
-/// here.
+/// All three pages ship as of Milestone 4.
 ///
-/// Milestone 2 deferred it believing cmd15 did not visibly switch the panel.
-/// It does. What was actually wrong was how the GIF had been stored: the
-/// vendor's GIF save has three modes, and every earlier test used mode 0
-/// ("set as boot animation"), which puts the frames somewhere that never
-/// plays. Saving with mode 1 ("save to the device") makes the GIF appear,
-/// and cmd15 then switches to it. See `fields.json`'s `unresolved[0]`.
-///
-/// So this stays unexposed only because GIF *upload* is not implemented
-/// yet: switching to an empty page is still not a useful command. That is a
-/// milestone, not a mystery.
+/// `Gif` took the longest route. Milestone 2 decoded cmd15 correctly but
+/// withheld it, believing the command did not visibly switch the panel.
+/// Milestone 3 found the real cause and it was not cmd15: the GIF under test
+/// had only ever been saved in the vendor's mode 0 ("set it as the startup
+/// animation"), which stores frames somewhere that never plays. Milestone 4
+/// implements the save that does (mode 1), which removed the last reason to
+/// keep the page switch hidden.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Home,
     Picture,
-    #[allow(dead_code)]
     Gif,
 }
 
@@ -354,6 +347,179 @@ pub fn build_picture_upload_body(pixels: &[u8]) -> Vec<[u8; 64]> {
 /// Total reports in one picture upload, start included: 1 + 1 + 549 + 1.
 pub fn picture_upload_report_count() -> usize {
     1 + 1 + PICTURE_BYTES.div_ceil(BULK_CHUNK) + 1
+}
+
+// --- Milestone 4: GIF upload ---
+
+/// The vendor's GIF save has three modes. We ship only mode 1.
+///
+/// | Mode | Vendor button | Max frames | Frame size |
+/// |------|---------------|-----------|------------|
+/// | 0 | Set it as the startup animation | 64 | 160x96 |
+/// | 1 | Save to the device | 160 | 160x96 |
+/// | 2 | Save GIF to the device home page | 42 | 96x64 |
+///
+/// Mode 0 is the trap that cost Milestone 2 a whole round of investigation: it
+/// stores the frames somewhere that never plays -- not on the GIF page, and
+/// not at power-up either (tested by replugging the keyboard). Mode 2's button
+/// renders only for product ID 12463; this keyboard is 12744. Neither is
+/// implemented or tested here.
+pub const GIF_MODE_SAVE_TO_DEVICE: u8 = 1;
+
+/// Frames the device will store in mode 1.
+pub const GIF_MAX_FRAMES: usize = 160;
+
+/// The vendor's frame-rate slider bounds. The rate is sent ONCE, as the last
+/// byte of the closing cmd19 -- the device animates at a single rate, so a GIF
+/// with variable per-frame delays cannot be reproduced exactly.
+pub const GIF_FPS_MIN: u8 = 1;
+pub const GIF_FPS_MAX: u8 = 60;
+pub const GIF_FPS_DEFAULT: u8 = 30;
+
+/// Frame pixel data is pushed one 1024-byte block at a time, and each block is
+/// chunked independently -- so the offset in bytes 1-2 **restarts at 0 for
+/// every block**.
+///
+/// This is the one place GIF genuinely differs from picture upload, which
+/// runs all 30720 bytes through a single chunker with offsets 0..30688. Do not
+/// "simplify" this onto `build_picture_upload_body`: 1024 = 18*56 + 16, so a
+/// block is 19 packets whose last one declares 16 bytes, and a frame is 30
+/// such blocks.
+pub const GIF_BLOCK_BYTES: usize = 1024;
+
+/// Packets per 1024-byte block, and blocks per frame -- derived, not typed
+/// twice, so the report-count arithmetic cannot drift from the chunker.
+const GIF_PACKETS_PER_BLOCK: usize = GIF_BLOCK_BYTES.div_ceil(BULK_CHUNK);
+const GIF_BLOCKS_PER_FRAME: usize = PICTURE_BYTES.div_ceil(GIF_BLOCK_BYTES);
+
+/// The cmd-17 payload: declares one frame's byte count, `[hi, lo]` like cmd12.
+pub const CMD17_GIF_DECLARE_SIZE_PAYLOAD: [u8; 7] = [165, 90, 17, 120, 0, 197, 3];
+
+// --- Host sleeps, read line by line off the vendor's `Ur()` ---
+//
+// Every gap in the vendor function is represented here, including the ones
+// that are zero, so that "no sleep here" is a recorded decision rather than an
+// omission. An earlier draft of the Milestone 4 plan listed three of these and
+// missed the 500 ms before finish entirely.
+//
+//   await i(open18); await c(open19); await sleep(30);
+//   for each frame:
+//     await c(cmd16); await sleep(index % 16 === 0 ? 3000 : 30);
+//     await c(cmd17);
+//     for each 1024-byte block: await c(block); await sleep(30);
+//   await c(close18); await sleep(30);
+//   await c(close19); await sleep(30);
+//   await sleep(500); await finish();
+
+/// After the two session-open reports. (Nothing between them.)
+pub const GIF_SESSION_OPEN_DELAY_MS: u64 = 30;
+/// After each frame's cmd16 header, on every 16th frame counting from 0.
+/// Almost certainly a flash-write pause; do not tune without hardware evidence.
+pub const GIF_FRAME_HEADER_SLOW_DELAY_MS: u64 = 3000;
+/// After each frame's cmd16 header, otherwise. (Nothing between cmd17 and the
+/// first data block.)
+pub const GIF_FRAME_HEADER_DELAY_MS: u64 = 30;
+/// After EVERY 1024-byte block, the last one in a frame included.
+pub const GIF_BLOCK_DELAY_MS: u64 = 30;
+/// After each of the two session-close reports.
+pub const GIF_SESSION_CLOSE_DELAY_MS: u64 = 30;
+/// Between the last close report and `finish`.
+pub const GIF_PRE_FINISH_DELAY_MS: u64 = 500;
+/// Frames per slow pause: the vendor's `frameIndex % 16 === 0`, 0-based, so
+/// frame 0 takes the slow branch.
+pub const GIF_SLOW_DELAY_EVERY: usize = 16;
+
+/// Builds a cmd18/cmd19 session payload.
+///
+/// The inner CRC covers only the fixed `[cmd, 0, len]` triple -- `ga([18,0,2])`
+/// and `ga([19,0,2])`, verified against the vendor's own function. The two
+/// trailing bytes sit AFTER it and are not inputs to it; they are covered by
+/// the outer checksum like any other payload byte. Folding `mode`/`last` into
+/// the inner CRC is an easy mistake and would be wrong.
+fn gif_session_payload(cmd: u8, crc: [u8; 2], mode: u8, last: u8) -> [u8; 9] {
+    [165, 90, cmd, 0, 2, crc[0], crc[1], mode, last]
+}
+
+/// The cmd-16 per-frame header. Ten bytes: the same inner cmd 16 the picture
+/// upload uses to *start* an upload, but with `len = 3` and a three-byte
+/// trailer `[2, mode, frame_index]` instead of picture's `[1]`.
+fn gif_frame_header_payload(mode: u8, frame_index: u8) -> [u8; 10] {
+    [165, 90, 16, 0, 3, 4, 48, 2, mode, frame_index]
+}
+
+/// Opens a GIF session: 2 reports.
+///
+/// Note the opcode asymmetry, which is the vendor's and is preserved
+/// deliberately: the opening cmd18 goes out as an **info package (0x40)** and
+/// everything else in the transaction, including the closing cmd18, as a data
+/// packet (0x41). It also differs from Milestone 2's "Clear GIF" capture,
+/// where both went out as 0x40 -- same command numbers, different sequence.
+pub fn build_gif_session_open(mode: u8) -> Vec<[u8; 64]> {
+    vec![
+        build_info_package(&gif_session_payload(18, [4, 80], mode, 0)),
+        build_data_packet(&gif_session_payload(19, [196, 1], mode, 0)),
+    ]
+}
+
+/// Closes a GIF session: 2 reports carrying the parameters that Milestone 2
+/// recorded as unexplained trailing bytes -- the **frame count** on cmd18 and
+/// the **frame rate** on cmd19.
+pub fn build_gif_session_close(mode: u8, frames: u8, fps: u8) -> Vec<[u8; 64]> {
+    vec![
+        build_data_packet(&gif_session_payload(18, [4, 80], mode, frames)),
+        build_data_packet(&gif_session_payload(19, [196, 1], mode, fps)),
+    ]
+}
+
+/// One frame's header pair: cmd16 (which frame) then cmd17 (how many bytes).
+/// The caller sleeps between them -- see `GIF_FRAME_HEADER_DELAY_MS`.
+pub fn build_gif_frame_header(mode: u8, frame_index: u8) -> [u8; 64] {
+    build_data_packet(&gif_frame_header_payload(mode, frame_index))
+}
+
+pub fn build_gif_declare_size() -> [u8; 64] {
+    build_data_packet(&CMD17_GIF_DECLARE_SIZE_PAYLOAD)
+}
+
+/// One frame's pixel data, as 30 blocks of 19 reports.
+///
+/// Returned grouped by block, because the caller must sleep 30 ms after each
+/// block -- returning a flat Vec would lose the boundary the timing depends on.
+pub fn build_gif_frame_blocks(pixels: &[u8]) -> Vec<Vec<[u8; 64]>> {
+    assert_eq!(
+        pixels.len(),
+        PICTURE_BYTES,
+        "a GIF frame needs exactly {PICTURE_BYTES} bytes of RGB565 data ({PANEL_W}x{PANEL_H}), got {}",
+        pixels.len()
+    );
+
+    pixels
+        .chunks(GIF_BLOCK_BYTES)
+        .map(|block| {
+            block
+                .chunks(BULK_CHUNK)
+                .enumerate()
+                .map(|(i, chunk)| {
+                    // Offset is relative to THIS block, not to the frame.
+                    let offset = i * BULK_CHUNK;
+                    build_report_at(
+                        OPCODE_DATA_PACKET,
+                        (offset & 0xff) as u8,
+                        ((offset >> 8) & 0xff) as u8,
+                        chunk.len() as u8,
+                        chunk,
+                    )
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Total reports in a GIF upload of `frames` frames:
+/// 2 open + frames x (1 cmd16 + 1 cmd17 + 30 blocks x 19) + 2 close + 1 finish.
+/// 1149 for the 2-frame capture.
+pub fn gif_upload_report_count(frames: usize) -> usize {
+    2 + frames * (2 + GIF_BLOCKS_PER_FRAME * GIF_PACKETS_PER_BLOCK) + 2 + 1
 }
 
 #[cfg(test)]
@@ -797,6 +963,227 @@ mod tests {
                 .all(|r| r[0] == OPCODE_DATA_PACKET)
         );
         assert_eq!(*body.last().unwrap(), build_finish());
+    }
+
+    // --- Milestone 4: GIF upload ---
+
+    fn gif_fixture() -> Vec<(String, [u8; 64])> {
+        let data: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/gif-upload.json"))
+                .expect("gif-upload.json must be valid JSON");
+        data["reports"]
+            .as_array()
+            .expect("reports array")
+            .iter()
+            .map(|r| {
+                (
+                    r["command_name"].as_str().unwrap().to_string(),
+                    parse_fixture_hex(r["payload_hex"].as_str().unwrap()),
+                )
+            })
+            .collect()
+    }
+
+    /// Each frame's pixel stream, read back out of the fixture's bulk packets.
+    ///
+    /// The fixture's pixel bytes come from the vendor capture, and our encoder
+    /// deliberately does not reproduce the vendor's browser resampling -- so a
+    /// test must feed the builder THESE bytes. Re-encoding the source GIF and
+    /// expecting equality would be a test built to fail.
+    fn gif_fixture_frames() -> Vec<Vec<u8>> {
+        let mut frames = Vec::new();
+        let mut current: Vec<u8> = Vec::new();
+        for (name, bytes) in gif_fixture() {
+            if name == "gif-bulk" {
+                let len = bytes[3] as usize;
+                current.extend_from_slice(&bytes[7..7 + len]);
+                if current.len() == PICTURE_BYTES {
+                    frames.push(std::mem::take(&mut current));
+                }
+            }
+        }
+        assert!(
+            current.is_empty(),
+            "frame boundaries did not divide the stream evenly"
+        );
+        frames
+    }
+
+    #[test]
+    fn gif_blocks_restart_their_offset_every_1024_bytes() {
+        let frame = vec![0u8; PICTURE_BYTES];
+        let blocks = build_gif_frame_blocks(&frame);
+
+        assert_eq!(blocks.len(), 30, "30720 / 1024 = 30 blocks per frame");
+        for (b, block) in blocks.iter().enumerate() {
+            assert_eq!(
+                block.len(),
+                19,
+                "block {b}: 1024 = 18*56 + 16, so 19 packets"
+            );
+            for (i, r) in block.iter().enumerate() {
+                let offset = r[1] as usize | ((r[2] as usize) << 8);
+                assert_eq!(
+                    offset,
+                    i * BULK_CHUNK,
+                    "block {b} packet {i}: offset is block-relative"
+                );
+                assert!(
+                    offset < GIF_BLOCK_BYTES,
+                    "an offset must never leave its block"
+                );
+            }
+            assert!(
+                block[..18].iter().all(|r| r[3] == 0x38),
+                "block {b}: first 18 packets carry a full 56 bytes"
+            );
+            assert_eq!(
+                block[18][3], 16,
+                "block {b}: the 19th packet carries the remaining 16"
+            );
+        }
+    }
+
+    /// The distinguishing property against picture upload, stated as a test so
+    /// that "simplify GIF onto the picture chunker" fails loudly.
+    #[test]
+    fn gif_offsets_are_block_relative_unlike_picture_uploads_continuous_run() {
+        let frame = vec![0u8; PICTURE_BYTES];
+        let gif_offsets: Vec<usize> = build_gif_frame_blocks(&frame)
+            .iter()
+            .flatten()
+            .map(|r| r[1] as usize | ((r[2] as usize) << 8))
+            .collect();
+        let picture_offsets: Vec<usize> = build_picture_upload_body(&frame)[1..550]
+            .iter()
+            .map(|r| r[1] as usize | ((r[2] as usize) << 8))
+            .collect();
+
+        assert_eq!(
+            *gif_offsets.iter().max().unwrap(),
+            1008,
+            "GIF never exceeds one block"
+        );
+        assert_eq!(
+            *picture_offsets.iter().max().unwrap(),
+            30688,
+            "picture spans the whole frame"
+        );
+        assert_eq!(
+            gif_offsets.iter().filter(|o| **o == 0).count(),
+            30,
+            "GIF restarts per block"
+        );
+        assert_eq!(
+            picture_offsets.iter().filter(|o| **o == 0).count(),
+            1,
+            "picture starts once"
+        );
+    }
+
+    #[test]
+    fn gif_reassembles_to_the_exact_frame_that_went_in() {
+        let frame: Vec<u8> = (0..PICTURE_BYTES).map(|i| (i % 251) as u8).collect();
+        let rebuilt: Vec<u8> = build_gif_frame_blocks(&frame)
+            .iter()
+            .flatten()
+            .flat_map(|r| r[7..7 + r[3] as usize].to_vec())
+            .collect();
+        assert_eq!(rebuilt, frame);
+    }
+
+    #[test]
+    fn gif_session_control_carries_mode_frame_count_and_rate() {
+        let open = build_gif_session_open(GIF_MODE_SAVE_TO_DEVICE);
+        assert_eq!(open.len(), 2);
+        // The vendor's opcode asymmetry: open cmd18 is an info package.
+        assert_eq!(open[0][0], OPCODE_INFO_PACKAGE);
+        assert_eq!(open[1][0], OPCODE_DATA_PACKET);
+        assert_eq!(open[0][7 + 7], GIF_MODE_SAVE_TO_DEVICE, "mode byte");
+        assert_eq!(open[0][7 + 8], 0, "no frame count on open");
+
+        let close = build_gif_session_close(GIF_MODE_SAVE_TO_DEVICE, 42, 12);
+        assert_eq!(close.len(), 2);
+        assert_eq!(
+            close[0][0], OPCODE_DATA_PACKET,
+            "the CLOSING cmd18 is a data packet"
+        );
+        assert_eq!(close[0][7 + 8], 42, "frame count rides on cmd18");
+        assert_eq!(close[1][7 + 8], 12, "frame rate rides on cmd19");
+
+        // Changing the rate moves exactly one PAYLOAD byte -- plus the
+        // checksum, because the payload is summed. (A plan draft claimed
+        // "exactly one byte", which is wrong about the wire.) The high
+        // checksum byte only moves when the low one carries, so 12 -> 30
+        // touches bytes 4 and 15 but not 5.
+        let other = build_gif_session_close(GIF_MODE_SAVE_TO_DEVICE, 42, 30);
+        let differing: Vec<usize> = (0..64).filter(|&i| close[1][i] != other[1][i]).collect();
+        assert!(
+            differing.contains(&15) && differing.contains(&4),
+            "the rate byte and the checksum low byte must move: {differing:?}"
+        );
+        assert!(
+            differing.iter().all(|i| [4usize, 5, 15].contains(i)),
+            "nothing beyond the rate byte and the checksum may move: {differing:?}"
+        );
+    }
+
+    #[test]
+    fn gif_frame_header_carries_the_frame_index() {
+        for idx in [0u8, 1, 15, 159] {
+            let r = build_gif_frame_header(GIF_MODE_SAVE_TO_DEVICE, idx);
+            assert_eq!(r[0], OPCODE_DATA_PACKET);
+            assert_eq!(r[3], 10, "the GIF flavour of cmd16 is a 10-byte payload");
+            assert_eq!(r[7 + 2], 16, "inner cmd 16");
+            assert_eq!(r[7 + 8], GIF_MODE_SAVE_TO_DEVICE);
+            assert_eq!(r[7 + 9], idx);
+        }
+    }
+
+    #[test]
+    fn gif_report_count_matches_the_capture() {
+        // 2 open + 2 x (2 + 30 x 19) + 2 close + 1 finish = 1149
+        assert_eq!(gif_upload_report_count(2), 1149);
+        assert_eq!(gif_upload_report_count(2), gif_fixture().len());
+    }
+
+    /// Whole-transaction comparison against the real capture, in order.
+    #[test]
+    fn gif_upload_reproduces_the_whole_1149_report_capture() {
+        let fixture = gif_fixture();
+        let frames = gif_fixture_frames();
+        assert_eq!(frames.len(), 2, "the capture is a 2-frame GIF");
+
+        let mut built: Vec<[u8; 64]> = Vec::new();
+        built.extend(build_gif_session_open(GIF_MODE_SAVE_TO_DEVICE));
+        for (i, pixels) in frames.iter().enumerate() {
+            built.push(build_gif_frame_header(GIF_MODE_SAVE_TO_DEVICE, i as u8));
+            built.push(build_gif_declare_size());
+            for block in build_gif_frame_blocks(pixels) {
+                built.extend(block);
+            }
+        }
+        built.extend(build_gif_session_close(
+            GIF_MODE_SAVE_TO_DEVICE,
+            frames.len() as u8,
+            30,
+        ));
+        built.push(build_finish());
+
+        assert_eq!(built.len(), fixture.len());
+        for (i, report) in built.iter().enumerate() {
+            let (name, expected) = &fixture[i];
+            assert_eq!(
+                report, expected,
+                "report {i} ({name}) differs from the capture"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "exactly 30720 bytes")]
+    fn gif_frame_blocks_reject_a_wrong_sized_frame() {
+        build_gif_frame_blocks(&vec![0u8; 1024]);
     }
 
     #[test]

@@ -397,3 +397,123 @@ function buildPictureUploadFixture() {
 const pictureUpload = buildPictureUploadFixture();
 fs.writeFileSync(path.join(__dirname, '..', 'fixtures', 'picture-upload.json'), JSON.stringify(pictureUpload, null, 2) + '\n');
 console.log(`wrote fixtures/picture-upload.json (${pictureUpload.reports.length} reports)`);
+
+// --- Milestone 4: GIF upload (cmd18/19 session, cmd16 frame, cmd17, bulk) ---
+//
+// HYBRID fixture, and labelled as such wherever it is described.
+//
+// The control reports, the 1024-byte block chunking, the per-block offsets,
+// the length bytes and every checksum are REGENERATED here by the model. The
+// pixel payload bytes are COPIED from the capture, because the vendor runs
+// each GIF frame through a three-stage browser-canvas downscale with smoothing
+// plus an edge filter, and browser resampling is not reproducible outside a
+// browser. Milestone 3's picture fixture is model-derived end to end; this one
+// is not, and the two must not be described as equivalent.
+//
+// What it still catches, which is the class of bug that breaks the device: any
+// error in framing, ordering, block boundaries, offset restart, length bytes,
+// or checksums.
+
+const GIF_BLOCK = 1024;
+const GIF_MODE = 1; // "save to the device" -- the mode that actually plays
+
+function gifSessionPayload(cmd, crc, mode, last) {
+  return [165, 90, cmd, 0, 2, crc[0], crc[1], mode, last];
+}
+
+function buildGifUploadFixture() {
+  const rawPath = path.join(__dirname, '..', 'fixtures', 'raw', 'cap-gif-upload-hidlog.json');
+  const raw = JSON.parse(fs.readFileSync(rawPath, 'utf8'));
+  const capture = raw.entries.map((e) => e.hex.trim().split(/\s+/).map((b) => parseInt(b, 16)));
+
+  // Recover each frame's pixel stream from the capture's bulk packets. This is
+  // the part we copy rather than model.
+  const framePixels = [];
+  let current = [];
+  for (const r of capture) {
+    const isControl = r[7] === 165 && r[8] === 90;
+    if (r[0] === 0x41 && !isControl) {
+      current.push(...r.slice(7, 7 + r[3]));
+      if (current.length === PANEL_W * PANEL_H * 2) {
+        framePixels.push(current);
+        current = [];
+      }
+    }
+  }
+  if (current.length !== 0) throw new Error(`trailing ${current.length} pixel bytes: frame boundaries are wrong`);
+  if (framePixels.length === 0) throw new Error('no frames recovered from the capture');
+
+  const reports = [];
+  function push(commandIndex, commandName, opcode, bytes, extra) {
+    const entry = {
+      transaction_id: 'gif-upload',
+      command_index: commandIndex,
+      command_name: commandName,
+      fragment_index: 0,
+      opcode_hex: '0x' + opcode.toString(16).padStart(2, '0'),
+      direction: 'out',
+      hid_method: 'output-report',
+      report_id: 0,
+      payload_hex: toHexBytes(bytes),
+    };
+    if (extra) Object.assign(entry, extra);
+    reports.push(entry);
+  }
+
+  // Session open. Note the opcode asymmetry, which is the vendor's: cmd18 goes
+  // out as an info package (0x40), cmd19 and everything after as data packets.
+  push(0, 'cmd18-gif-session-open-infoPackage', 0x40,
+    buildReport(0x40, 0, 0, 9, gifSessionPayload(18, [4, 80], GIF_MODE, 0)));
+  push(0, 'cmd19-gif-session-open-dataPacket', 0x41,
+    buildReport(0x41, 0, 0, 9, gifSessionPayload(19, [196, 1], GIF_MODE, 0)));
+
+  framePixels.forEach((pixels, frameIndex) => {
+    push(1 + frameIndex, 'cmd16-gif-frame-header', 0x41,
+      buildReport(0x41, 0, 0, 10, [165, 90, 16, 0, 3, 4, 48, 2, GIF_MODE, frameIndex]),
+      { frame_index: frameIndex });
+    push(1 + frameIndex, 'cmd17-gif-declareSize', 0x41,
+      buildReport(0x41, 0, 0, 7, [165, 90, 17, 120, 0, 197, 3]));
+
+    // The offset RESTARTS at 0 for every 1024-byte block -- unlike picture
+    // upload, whose offsets run 0..30688 across the whole frame.
+    for (let blockStart = 0; blockStart < pixels.length; blockStart += GIF_BLOCK) {
+      const block = pixels.slice(blockStart, blockStart + GIF_BLOCK);
+      for (let off = 0; off < block.length; off += BULK_CHUNK) {
+        const chunk = block.slice(off, off + BULK_CHUNK);
+        push(1 + frameIndex, 'gif-bulk', 0x41,
+          buildReport(0x41, off & 0xff, (off >> 8) & 0xff, chunk.length, chunk),
+          { block_offset: off, data_length: chunk.length });
+      }
+    }
+  });
+
+  push(90, 'cmd18-gif-session-close-frameCount', 0x41,
+    buildReport(0x41, 0, 0, 9, gifSessionPayload(18, [4, 80], GIF_MODE, framePixels.length)));
+  push(91, 'cmd19-gif-session-close-fps', 0x41,
+    buildReport(0x41, 0, 0, 9, gifSessionPayload(19, [196, 1], GIF_MODE, raw.fps)));
+  push(92, 'gif-finish', 0x42, FINISH_OUT);
+
+  return {
+    transaction_id: 'gif-upload',
+    connection_mode: 'usb-cable',
+    interface_identity: cap1.interface_identity,
+    browser: 'Chrome (claude-in-chrome automation)',
+    source_gif: raw.source_gif,
+    mode: GIF_MODE,
+    fps: raw.fps,
+    note: 'HYBRID fixture. Control reports, block chunking, per-block offsets, length bytes and all checksums are regenerated by the model in scripts/build-fixtures.js. Pixel payload bytes are COPIED from fixtures/raw/cap-gif-upload-hidlog.json, because the vendor resamples each GIF frame through a browser canvas and that is not reproducible outside a browser. This is deliberately weaker than fixtures/picture-upload.json, which is model-derived end to end -- do not describe them as equivalent. It still pins framing, ordering, block boundaries, offset restart, lengths and checksums against real hardware traffic.',
+    structure: {
+      total_reports: reports.length,
+      frames: framePixels.length,
+      block_bytes: GIF_BLOCK,
+      packets_per_block: Math.ceil(GIF_BLOCK / BULK_CHUNK),
+      blocks_per_frame: Math.ceil(PANEL_W * PANEL_H * 2 / GIF_BLOCK),
+      note: 'Offsets restart at 0 for EVERY 1024-byte block (1024 = 18*56 + 16, so 19 packets per block, the last declaring 16). Picture upload instead runs one continuous 0..30688 offset across the whole frame. Do not unify the two chunkers.',
+    },
+    reports,
+  };
+}
+
+const gifUpload = buildGifUploadFixture();
+fs.writeFileSync(path.join(__dirname, '..', 'fixtures', 'gif-upload.json'), JSON.stringify(gifUpload, null, 2) + '\n');
+console.log(`wrote fixtures/gif-upload.json (${gifUpload.reports.length} reports)`);
