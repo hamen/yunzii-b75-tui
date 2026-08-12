@@ -7,7 +7,7 @@
 //! person with a keyboard plugged in can check.
 
 use crate::adjust::Adjustments;
-use crate::plan::{self, GifPlan, PicturePlan};
+use crate::plan::{self, GifPlan, PicturePlan, Placement};
 use crate::protocol::Page;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -151,6 +151,7 @@ pub enum Pending {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Rate,
+    Placement,
     Brightness,
     Chroma,
     Saturation,
@@ -160,8 +161,9 @@ pub enum Row {
 }
 
 impl Row {
-    pub const GIF: [Row; 7] = [
+    pub const GIF: [Row; 8] = [
         Row::Rate,
+        Row::Placement,
         Row::Brightness,
         Row::Chroma,
         Row::Saturation,
@@ -170,7 +172,8 @@ impl Row {
         Row::Blur,
     ];
     /// A picture has no frame rate.
-    pub const PICTURE: [Row; 6] = [
+    pub const PICTURE: [Row; 7] = [
+        Row::Placement,
         Row::Brightness,
         Row::Chroma,
         Row::Saturation,
@@ -182,6 +185,7 @@ impl Row {
     pub fn label(self) -> &'static str {
         match self {
             Row::Rate => "Rate",
+            Row::Placement => "Placement",
             Row::Brightness => "Brightness",
             Row::Chroma => "Chroma",
             Row::Saturation => "Saturation",
@@ -213,6 +217,16 @@ impl Pending {
     pub fn adjustments(&self) -> &Adjustments {
         match self {
             Pending::Picture { adjustments, .. } | Pending::Gif { adjustments, .. } => adjustments,
+        }
+    }
+
+    /// Reads from `plan.placement` rather than a separate field -- there is
+    /// exactly one source of truth for what a `Pending`'s frames were fit
+    /// into the panel with, and it already lives on the plan.
+    pub fn placement(&self) -> Placement {
+        match self {
+            Pending::Picture { plan, .. } => plan.placement,
+            Pending::Gif { plan, .. } => plan.placement,
         }
     }
 
@@ -315,6 +329,23 @@ pub enum Job {
         /// yanking them into a confirm screen they already dismissed.
         generation: u64,
     },
+    /// A placement toggle: re-derive `Pending` from the source file with a
+    /// new `Placement`, carrying forward whatever `Adjustments`/
+    /// `rate_override`/`row` were live at the moment of the toggle. Cannot
+    /// be a cheap `Pending::reencode_preview`-style recompute the way an
+    /// `Adjustments` change is -- the first resize already destroyed the
+    /// information the other placement would need.
+    Replan {
+        path: PathBuf,
+        for_gif: bool,
+        placement: Placement,
+        adjustments: Adjustments,
+        rate_override: Option<u8>,
+        row: usize,
+        /// Same counter `Preview` uses -- both represent "a decode result
+        /// that may arrive after the thing that wanted it is gone".
+        generation: u64,
+    },
     SetTime,
     SwitchPage(Page),
     ClearPicture,
@@ -328,6 +359,14 @@ pub enum Job {
 pub enum Update {
     Device(DeviceState),
     Preview {
+        generation: u64,
+        result: Box<Result<Pending, String>>,
+    },
+    /// The reply to a `Job::Replan`. NOT `Update::Finished`: that variant
+    /// unconditionally sends the screen back to the menu on any result,
+    /// which would discard a still-valid `Pending` on a decode failure for
+    /// a file that already decoded successfully once.
+    Replan {
         generation: u64,
         result: Box<Result<Pending, String>>,
     },
@@ -394,6 +433,17 @@ pub struct App {
     /// upload started behind the first would run against a device whose state
     /// the user has forgotten about.
     pub job_pending: bool,
+    /// A `Job::Replan` has been dispatched and has not reported back.
+    ///
+    /// Distinct from `job_pending`: `job_pending` only gates `Enter` (see
+    /// `on_key`'s top-level check), which is enough for every job dispatched
+    /// there because `Enter` is the only key that ever starts one. A
+    /// placement toggle dispatches from `Space`, so it needs its own,
+    /// stricter gate blocking every mutating key on the confirm screen
+    /// (row navigation, toggles, sliders, reset) while a replan is in
+    /// flight -- otherwise a slider moved mid-replan would be silently
+    /// overwritten when the new `Pending` arrives.
+    pub replan_pending: bool,
 }
 
 impl App {
@@ -411,6 +461,7 @@ impl App {
             final_message: None,
             preview_generation: 0,
             job_pending: false,
+            replan_pending: false,
         }
     }
 
@@ -630,10 +681,24 @@ impl App {
     }
 
     fn confirm_key(&mut self, key: Key) -> Option<Job> {
+        // `replan_pending` blocks every mutating key except Esc/`q` while a
+        // placement replan is in flight -- checked before the match below so
+        // it applies uniformly, the same way `job_pending`'s Enter-only gate
+        // is checked once at the top of `on_key` rather than in every arm
+        // that could start a job.
+        if self.replan_pending && !matches!(key, Key::Esc | Key::Char('q')) {
+            self.note("still recomputing placement");
+            return None;
+        }
         match key {
             Key::Esc | Key::Char('q') => {
                 self.screen = Screen::Menu;
                 self.note("discarded");
+                // A replan may still be in flight for the screen just left --
+                // bump the generation (the SAME counter `Preview` uses) so
+                // its eventual reply is recognised as stale and dropped,
+                // mirroring exactly how leaving Browse mid-Preview works.
+                self.preview_generation += 1;
                 None
             }
             Key::Up | Key::Down => {
@@ -669,6 +734,39 @@ impl App {
                     return None;
                 };
                 let row = p.rows()[p.row()];
+                if row == Row::Placement {
+                    let next = match p.placement() {
+                        Placement::Contain => Placement::Fill,
+                        Placement::Fill => Placement::Contain,
+                    };
+                    let (path, for_gif, adjustments, rate_override, cur_row) = match p.as_ref() {
+                        Pending::Picture {
+                            path,
+                            adjustments,
+                            row,
+                            ..
+                        } => (path.clone(), false, *adjustments, None, *row),
+                        Pending::Gif {
+                            path,
+                            adjustments,
+                            rate_override,
+                            row,
+                            ..
+                        } => (path.clone(), true, *adjustments, *rate_override, *row),
+                    };
+                    self.preview_generation += 1;
+                    self.replan_pending = true;
+                    self.note("recomputing placement...");
+                    return Some(Job::Replan {
+                        path,
+                        for_gif,
+                        placement: next,
+                        adjustments,
+                        rate_override,
+                        row: cur_row,
+                        generation: self.preview_generation,
+                    });
+                }
                 if toggle_row(p.as_mut(), row) {
                     p.reencode_preview();
                 }
@@ -775,6 +873,26 @@ impl App {
                     }
                 }
             }
+            Update::Replan { generation, result } => {
+                // Frees both gates regardless of whether this reply is even
+                // applied below -- a stale reply still means the worker is
+                // free, the same way `Update::Preview` already treats it.
+                self.job_pending = false;
+                self.replan_pending = false;
+                if generation != self.preview_generation {
+                    return;
+                }
+                match *result {
+                    Ok(pending) => {
+                        self.screen = Screen::Confirm(Box::new(pending));
+                        self.note("placement updated");
+                    }
+                    // Deliberately does NOT touch `self.screen`: the existing
+                    // `Screen::Confirm(old_pending)` stays exactly as it was
+                    // before the toggle, nothing discarded.
+                    Err(e) => self.note(e),
+                }
+            }
             Update::Started {
                 label,
                 total,
@@ -870,6 +988,10 @@ fn adjust_row(p: &mut Pending, row: Row, up: bool) -> bool {
         // having both would mean the same row answered to three keys with two
         // meanings between them.
         Row::Grayscale | Row::Sharpen | Row::Blur => false,
+        // Placement toggles on `Space` too (dispatching `Job::Replan` --
+        // handled directly in `confirm_key`, never reaches `adjust_row` or
+        // `toggle_row`), never on arrows.
+        Row::Placement => false,
     }
 }
 
@@ -949,6 +1071,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             None,
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -1685,9 +1808,12 @@ mod tests {
 
     #[test]
     fn a_picture_has_no_rate_row() {
-        let plan =
-            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let plan = plan::plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let p = Pending::Picture {
             path: PathBuf::from("p.png"),
             plan,
@@ -1695,13 +1821,14 @@ mod tests {
             row: 0,
         };
         assert!(!p.rows().contains(&Row::Rate));
-        assert_eq!(p.rows()[0], Row::Brightness);
+        assert_eq!(p.rows()[0], Row::Placement);
     }
 
     #[test]
     fn a_slider_moves_by_the_step_and_clamps() {
         let mut a = app_ready();
         a.screen = Screen::Confirm(Box::new(gif_pending()));
+        a.on_key(Key::Down); // -> Placement
         a.on_key(Key::Down); // -> Brightness
 
         a.on_key(Key::Right);
@@ -1734,11 +1861,11 @@ mod tests {
     fn space_toggles_each_boolean_row() {
         for (steps, read) in [
             (
-                4usize,
+                5usize,
                 (|a: &Adjustments| a.grayscale) as fn(&Adjustments) -> bool,
             ),
-            (5, |a: &Adjustments| a.sharpen),
-            (6, |a: &Adjustments| a.blur),
+            (6, |a: &Adjustments| a.sharpen),
+            (7, |a: &Adjustments| a.blur),
         ] {
             let mut a = app_ready();
             a.screen = Screen::Confirm(Box::new(gif_pending()));
@@ -1764,7 +1891,8 @@ mod tests {
         let mut a = app_ready();
         a.screen = Screen::Confirm(Box::new(gif_pending()));
         a.on_key(Key::Right); // rate +1
-        a.on_key(Key::Down);
+        a.on_key(Key::Down); // -> Placement
+        a.on_key(Key::Down); // -> Brightness
         a.on_key(Key::Right); // brightness
         a.on_key(Key::Down);
         a.on_key(Key::Down);
@@ -1808,7 +1936,8 @@ mod tests {
             _ => unreachable!(),
         };
 
-        a.on_key(Key::Down); // Brightness
+        a.on_key(Key::Down); // -> Placement
+        a.on_key(Key::Down); // -> Brightness
         for _ in 0..6 {
             a.on_key(Key::Right);
         }
@@ -1879,6 +2008,7 @@ mod tests {
         a.on_key(Key::Down);
         a.on_key(Key::Down);
         a.on_key(Key::Down);
+        a.on_key(Key::Down);
         a.on_key(Key::Char(' ')); // grayscale
 
         let job = a.on_key(Key::Enter).expect("upload");
@@ -1926,16 +2056,20 @@ mod tests {
     #[test]
     fn each_slider_row_moves_its_own_value() {
         let picture_plan = || {
-            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap()
+            plan::plan_picture_upload(
+                Path::new("fixtures/test-quadrants.png"),
+                Placement::Fill,
+                &Adjustments::NONE,
+            )
+            .unwrap()
         };
 
         // (steps down from the top, which field it should move)
         type ReadField = fn(&Adjustments) -> f64;
         let gif_cases: [(usize, ReadField); 3] = [
-            (1, |a| a.brightness),
-            (2, |a| a.chroma),
-            (3, |a| a.saturation),
+            (2, |a| a.brightness),
+            (3, |a| a.chroma),
+            (4, |a| a.saturation),
         ];
         for (steps, read) in gif_cases {
             let mut a = app_ready();
@@ -1957,11 +2091,13 @@ mod tests {
             );
         }
 
-        // A picture has no Rate row, so everything shifts up by one.
+        // A picture has no Rate row, so everything shifts up by one --
+        // except Placement is still row 0 on both, so brightness starts at
+        // row 1 either way.
         let picture_cases: [(usize, ReadField); 3] = [
-            (0, |a| a.brightness),
-            (1, |a| a.chroma),
-            (2, |a| a.saturation),
+            (1, |a| a.brightness),
+            (2, |a| a.chroma),
+            (3, |a| a.saturation),
         ];
         for (steps, read) in picture_cases {
             let mut a = app_ready();
@@ -1988,7 +2124,9 @@ mod tests {
     /// Every slider clamps, not just brightness, and on a picture too.
     #[test]
     fn every_slider_clamps_at_both_ends() {
-        for steps in 1..=3usize {
+        // +1 vs. the field's own index: Placement occupies row 1 (row 0 is
+        // Rate), pushing Brightness/Chroma/Saturation to rows 2/3/4.
+        for steps in 2..=4usize {
             let mut a = app_ready();
             a.screen = Screen::Confirm(Box::new(gif_pending()));
             for _ in 0..steps {
@@ -2001,7 +2139,7 @@ mod tests {
                 unreachable!()
             };
             let adj = *p.adjustments();
-            let v = [adj.brightness, adj.chroma, adj.saturation][steps - 1];
+            let v = [adj.brightness, adj.chroma, adj.saturation][steps - 2];
             assert_eq!(v, 1.0, "row {steps} did not stop at +1");
 
             for _ in 0..500 {
@@ -2011,8 +2149,220 @@ mod tests {
                 unreachable!()
             };
             let adj = *p.adjustments();
-            let v = [adj.brightness, adj.chroma, adj.saturation][steps - 1];
+            let v = [adj.brightness, adj.chroma, adj.saturation][steps - 2];
             assert_eq!(v, -1.0, "row {steps} did not stop at -1");
         }
+    }
+
+    // --- Milestone 7: placement / Job::Replan ---
+
+    #[test]
+    fn space_on_placement_dispatches_a_replan_not_a_ui_thread_recompute() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending())); // placement: Fill
+        a.on_key(Key::Down); // Rate -> Placement
+        let job = a.on_key(Key::Char(' ')).expect("a replan job");
+        match job {
+            Job::Replan {
+                placement, for_gif, ..
+            } => {
+                assert_eq!(
+                    placement,
+                    Placement::Contain,
+                    "toggling from Fill must ask for the opposite"
+                );
+                assert!(for_gif);
+            }
+            other => panic!("expected Job::Replan, got {other:?}"),
+        }
+        // Not a UI-thread recompute: the screen still shows the OLD plan --
+        // nothing was recomputed inline in the key handler.
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert_eq!(
+            p.placement(),
+            Placement::Fill,
+            "unchanged until the worker replies"
+        );
+        assert!(a.job_pending);
+        assert!(a.replan_pending);
+    }
+
+    #[test]
+    fn replan_pending_blocks_every_mutating_key_but_not_esc() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        a.replan_pending = true;
+        a.status = Some("recomputing placement...".into());
+
+        for key in [
+            Key::Up,
+            Key::Down,
+            Key::Left,
+            Key::Right,
+            Key::Char(' '),
+            Key::Char('0'),
+        ] {
+            assert!(
+                a.confirm_key(key).is_none(),
+                "{key:?} must not start a job while a replan is in flight"
+            );
+        }
+        // Nothing moved: still on row 0 (Rate), still Fill, still no
+        // adjustments -- every one of those keys was fully absorbed by the
+        // gate, not partially applied.
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert_eq!(p.row(), 0);
+        assert!(p.adjustments().is_identity());
+
+        // Esc still works.
+        assert!(a.confirm_key(Key::Esc).is_none());
+        assert!(matches!(a.screen, Screen::Menu));
+    }
+
+    #[test]
+    fn toggling_placement_actually_flips_after_a_successful_replan() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending())); // Fill
+        a.on_key(Key::Down); // -> Placement
+        let job = a.on_key(Key::Char(' ')).expect("a replan job");
+        let Job::Replan {
+            path,
+            for_gif: _,
+            placement,
+            adjustments,
+            rate_override,
+            row,
+            generation,
+        } = job
+        else {
+            unreachable!()
+        };
+        // What the worker does on receipt (mirrors `build_pending`).
+        let plan = plan::plan_gif_upload(&path, None, None, placement, &adjustments).unwrap();
+        let new_pending = Pending::Gif {
+            path,
+            plan,
+            rate_override,
+            adjustments,
+            row,
+        };
+        a.on_update(Update::Replan {
+            generation,
+            result: Box::new(Ok(new_pending)),
+        });
+
+        let Screen::Confirm(p) = &a.screen else {
+            panic!("expected the confirm screen to still be showing")
+        };
+        assert_eq!(p.placement(), Placement::Contain);
+        assert!(!a.job_pending);
+        assert!(!a.replan_pending);
+        assert_ne!(
+            a.status.as_deref(),
+            Some("recomputing placement..."),
+            "the in-flight note must be replaced, not left stale"
+        );
+    }
+
+    #[test]
+    fn update_replan_carries_the_row_forward_not_reset_to_zero() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        // Manually construct a reply as if the worker replanned while the
+        // cursor was on the Blur row -- not reachable through a real
+        // keypress (Space only toggles placement from the Placement row
+        // itself), so this is a worker-state-level test of the plumbing.
+        let blur_row = Row::GIF.iter().position(|r| *r == Row::Blur).unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            None,
+            None,
+            Placement::Contain,
+            &Adjustments::NONE,
+        )
+        .unwrap();
+        a.preview_generation = 3;
+        a.replan_pending = true;
+        a.job_pending = true;
+        a.on_update(Update::Replan {
+            generation: 3,
+            result: Box::new(Ok(Pending::Gif {
+                path: PathBuf::from("fixtures/test-anim-2frames.gif"),
+                plan,
+                rate_override: None,
+                adjustments: Adjustments::NONE,
+                row: blur_row,
+            })),
+        });
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert_eq!(p.row(), blur_row, "the cursor must not reset to row 0");
+    }
+
+    #[test]
+    fn update_replan_with_a_stale_generation_is_dropped() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        a.preview_generation = 5;
+        a.replan_pending = true;
+        a.job_pending = true;
+
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            None,
+            None,
+            Placement::Contain,
+            &Adjustments::NONE,
+        )
+        .unwrap();
+        a.on_update(Update::Replan {
+            generation: 3, // stale: does not match preview_generation (5)
+            result: Box::new(Ok(Pending::Gif {
+                path: PathBuf::from("fixtures/test-anim-2frames.gif"),
+                plan,
+                rate_override: None,
+                adjustments: Adjustments::NONE,
+                row: 0,
+            })),
+        });
+        // The worker is free either way.
+        assert!(!a.job_pending);
+        assert!(!a.replan_pending);
+        // But the stale reply itself was not applied: placement is still Fill.
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert_eq!(
+            p.placement(),
+            Placement::Fill,
+            "a stale reply must not be applied"
+        );
+    }
+
+    #[test]
+    fn update_replan_err_leaves_the_existing_pending_untouched_not_menu() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        a.preview_generation = 9;
+        a.replan_pending = true;
+        a.job_pending = true;
+
+        a.on_update(Update::Replan {
+            generation: 9,
+            result: Box::new(Err("the file vanished".to_string())),
+        });
+
+        assert!(!a.job_pending);
+        assert!(!a.replan_pending);
+        assert!(
+            matches!(a.screen, Screen::Confirm(_)),
+            "an Err must not route through Update::Finished's Screen::Menu, \
+             the whole point of Update::Replan being its own variant"
+        );
     }
 }

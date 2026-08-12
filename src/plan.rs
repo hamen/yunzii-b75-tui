@@ -76,11 +76,134 @@ impl std::fmt::Display for MediaError {
 }
 
 impl std::error::Error for MediaError {}
+
+/// How a source image is fit into the panel's fixed 160x96.
+///
+/// The vendor's "Location" dropdown sends no HID at all -- a client-side
+/// resize choice, the same class of finding as Milestone 6's sliders (see
+/// PROTOCOL.md). Traced to the vendor's real GIF resize/placement function
+/// (`Ut()` in the bundle); the picture path's own placement mechanism was
+/// not separately confirmed to use the same geometry (see PROTOCOL.md), so
+/// `Contain` here is vendor-inspired for GIFs and our own internally
+/// consistent choice for pictures -- not vendor-exact for either in the
+/// final resampled pixel values (browser-specific resampling isn't
+/// reproducible in Rust regardless).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Placement {
+    /// Scale to fit inside the panel, preserving aspect ratio, centered,
+    /// padded with opaque black. The vendor's default ("In the middle").
+    #[default]
+    Contain,
+    /// Stretch to exactly fill the panel; aspect ratio is not preserved.
+    /// The vendor's "Cover up completely" -- despite the name, this is CSS
+    /// `object-fit: fill` (plain stretch), not `cover` (crop-to-fill): the
+    /// vendor's own resize function draws the whole source into the full
+    /// destination rectangle with no cropping (see PROTOCOL.md).
+    Fill,
+}
+
+/// Blackens the RGB of every fully-transparent (`alpha == 0`) pixel before a
+/// spatial resize, so hidden colour can't leak into a resized neighbour under
+/// `Contain`'s `Lanczos3` filter (which treats R/G/B/A as independent
+/// channels on straight, non-premultiplied alpha). Deliberately narrower than
+/// Milestone 3's "partial transparency keeps its full colour" policy:
+/// partial-alpha pixels are left untouched here, on purpose -- only fully
+/// hidden (`alpha == 0`) colour is blackened, mirroring exactly what
+/// `Adjustments::apply()` already does before its own spatial filters
+/// (sharpen/blur), extended here to the resize step those didn't need to
+/// touch.
+fn blacken_transparent(img: &mut image::RgbaImage) {
+    for px in img.pixels_mut() {
+        if px[3] == 0 {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+        }
+    }
+}
+
+/// Fits `img` into the panel per `placement`, returning panel-sized RGBA.
+///
+/// `Fill`: unchanged from before Milestone 7 -- `resize_exact` with
+/// `FilterType::Nearest`. See the two call sites below for what this filter
+/// choice matches (or doesn't) on each path; the claim differs by path and
+/// belongs there, not here.
+///
+/// `Contain`: scale to fit inside the panel preserving aspect ratio,
+/// centred, padded with opaque black -- computed once at panel resolution,
+/// not the vendor's real 3x-then-1.5x-then-1x staged resolution (see
+/// `Placement`'s own doc comment). All four of `dst_w`/`dst_h`/`dst_x`/
+/// `dst_y` are rounded independently from unrounded intermediates via
+/// `js_round` (JS `Math.round` semantics), matching the *shape* of the
+/// vendor's own four independent `Math.round` calls even though the
+/// resolution they're computed at differs. `FilterType::Lanczos3` is our own
+/// high-quality choice, not a vendor-matched one.
+/// `Contain`'s geometry alone, extracted from `resize_to_panel` so it's
+/// directly testable against hand-computed values without decoding an
+/// image. All four rounded independently from unrounded intermediates via
+/// `js_round`, per `resize_to_panel`'s own doc comment.
+fn contain_geometry(src_w: u32, src_h: u32) -> (u32, u32, u32, u32) {
+    let (src_w, src_h) = (src_w as f64, src_h as f64);
+    let scale = (protocol::PANEL_W as f64 / src_w).min(protocol::PANEL_H as f64 / src_h);
+    let dst_w = crate::adjust::js_round(src_w * scale) as u32;
+    let dst_h = crate::adjust::js_round(src_h * scale) as u32;
+    let dst_x =
+        crate::adjust::js_round((protocol::PANEL_W as f64 - src_w * scale) / 2.0).max(0.0) as u32;
+    let dst_y =
+        crate::adjust::js_round((protocol::PANEL_H as f64 - src_h * scale) / 2.0).max(0.0) as u32;
+    (dst_x, dst_y, dst_w, dst_h)
+}
+
+fn resize_to_panel(img: &image::DynamicImage, placement: Placement) -> Vec<u8> {
+    match placement {
+        Placement::Fill => img
+            .resize_exact(
+                protocol::PANEL_W,
+                protocol::PANEL_H,
+                image::imageops::FilterType::Nearest,
+            )
+            .to_rgba8()
+            .into_raw(),
+        Placement::Contain => {
+            let mut src = img.to_rgba8();
+            blacken_transparent(&mut src);
+            let (dst_x, dst_y, dst_w, dst_h) = contain_geometry(src.width(), src.height());
+
+            let mut panel = image::RgbaImage::from_pixel(
+                protocol::PANEL_W,
+                protocol::PANEL_H,
+                image::Rgba([0, 0, 0, 255]),
+            );
+            // A degenerate source (extreme aspect ratio) can round to zero on
+            // one axis -- the vendor's own `drawImage` with a zero dimension
+            // is a silent no-op onto its pre-filled black canvas; skip the
+            // resize/copy the same way rather than let `image::imageops::resize`
+            // panic on a zero target dimension.
+            if dst_w > 0 && dst_h > 0 {
+                let resized = image::imageops::resize(
+                    &src,
+                    dst_w,
+                    dst_h,
+                    image::imageops::FilterType::Lanczos3,
+                );
+                for (x, y, px) in resized.enumerate_pixels() {
+                    let (px_x, px_y) = (x + dst_x, y + dst_y);
+                    if px_x < protocol::PANEL_W && px_y < protocol::PANEL_H {
+                        panel.put_pixel(px_x, px_y, *px);
+                    }
+                }
+            }
+            panel.into_raw()
+        }
+    }
+}
+
 /// Reads an image file and converts it to the panel's 30720-byte RGB565
 /// frame. Pure of any device access on purpose: a bad path or a corrupt file
 /// must fail as an image problem, and must be testable without hardware.
 pub fn load_and_encode_picture(
     path: &Path,
+    placement: Placement,
     adjustments: &Adjustments,
 ) -> Result<(Vec<u8>, Vec<u8>), MediaError> {
     let fail = |detail: String| MediaError {
@@ -110,18 +233,15 @@ pub fn load_and_encode_picture(
         .map_err(|e| fail(format!("could not decode it: {e}")))?;
     img.apply_orientation(orientation);
 
-    // Nearest-neighbour, to match the vendor's `imageSmoothingEnabled =
-    // false`. An interpolating filter would produce different bytes than the
-    // vendor's tool does for the same input file.
-    let resized = img.resize_exact(
-        protocol::PANEL_W,
-        protocol::PANEL_H,
-        image::imageops::FilterType::Nearest,
-    );
-
-    // Panel-sized, immediately before the encode. `is_identity` short-circuits
-    // so an unadjusted upload produces the same bytes it always has.
-    let panel = resized.to_rgba8().into_raw();
+    // `Fill`'s nearest-neighbour matches the vendor's real picture-save
+    // handler: it draws the fabric.js canvas onto the export canvas with
+    // `imageSmoothingEnabled = false` (a real 2x downscale, 320x192 ->
+    // 160x96, not a same-size copy -- see PROTOCOL.md). What that handler's
+    // own FIRST stage (rendering the source onto its 320x192 canvas in the
+    // first place, where placement itself is presumably decided) actually
+    // does has not been traced -- this claim covers only the final export
+    // step's filter, not the full pipeline.
+    let panel = resize_to_panel(&img, placement);
     let pixels = adjust_and_encode(&panel, adjustments);
     debug_assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
     Ok((pixels, panel))
@@ -228,6 +348,7 @@ impl SourceRate {
 pub fn load_gif_frames(
     path: &Path,
     max_frames: Option<NonZeroUsize>,
+    placement: Placement,
     adjustments: &Adjustments,
 ) -> Result<GifFrames, MediaError> {
     let fail = |detail: String| MediaError {
@@ -277,12 +398,14 @@ pub fn load_gif_frames(
         }
         let mut canvas = image::DynamicImage::ImageRgba8(frame.into_buffer());
         flatten_onto_black(&mut canvas);
-        let resized = canvas.resize_exact(
-            protocol::PANEL_W,
-            protocol::PANEL_H,
-            image::imageops::FilterType::Nearest,
-        );
-        let panel = resized.to_rgba8().into_raw();
+        // `Fill`'s nearest-neighbour does NOT match the vendor here --
+        // `Ut()`, the vendor's real GIF resize/placement function, uses
+        // `imageSmoothingEnabled = true, imageSmoothingQuality = "high"`
+        // for both its placement modes (see PROTOCOL.md). `FilterType::Nearest`
+        // is kept anyway: this byte output already shipped and is exercised
+        // by existing golden tests, and changing it is a separate,
+        // higher-risk change orthogonal to adding the missing `Contain` mode.
+        let panel = resize_to_panel(&canvas, placement);
         frames.push(adjust_and_encode(&panel, adjustments));
         panel_rgba.push(panel);
     }
@@ -478,6 +601,13 @@ pub struct PicturePlan {
     pub pixels: Vec<u8>,
     /// Panel-sized RGBA before adjustment; see `GifFrames::panel_rgba`.
     pub panel_rgba: Vec<u8>,
+    /// How the source was fit into the panel to produce `panel_rgba`.
+    /// Recorded for display/debugging, matching how `adjustments` is
+    /// already carried. Changing placement always re-derives `panel_rgba`
+    /// from the original source -- there is no cheap partial re-derivation
+    /// the way `reencode()` gives adjustments, since the first resize
+    /// already destroyed the information the other placement would need.
+    pub placement: Placement,
     /// What `pixels` was encoded with. Changing it and calling `reencode`
     /// is how the interface applies a new setting.
     pub adjustments: Adjustments,
@@ -491,6 +621,8 @@ pub struct GifPlan {
     pub frames: Vec<Vec<u8>>,
     /// Panel-sized RGBA before adjustment, one per encoded frame.
     pub panel_rgba: Vec<Vec<u8>>,
+    /// How the source was fit into the panel; see `PicturePlan::placement`.
+    pub placement: Placement,
     /// What `frames` was encoded with; see `PicturePlan::adjustments`.
     pub adjustments: Adjustments,
     pub rate: u8,
@@ -511,9 +643,10 @@ pub struct GifPlan {
 /// Reads a PNG or JPEG and decides everything about its upload.
 pub fn plan_picture_upload(
     path: &Path,
+    placement: Placement,
     adjustments: &Adjustments,
 ) -> Result<PicturePlan, MediaError> {
-    let (pixels, panel_rgba) = load_and_encode_picture(path, adjustments)?;
+    let (pixels, panel_rgba) = load_and_encode_picture(path, placement, adjustments)?;
     let total_reports = protocol::picture_upload_report_count();
     Ok(PicturePlan {
         // Only what the planner alone knows. The CLI's "sending N reports"
@@ -531,6 +664,7 @@ pub fn plan_picture_upload(
         ))],
         pixels,
         panel_rgba,
+        placement,
         adjustments: *adjustments,
         total_reports,
     })
@@ -594,9 +728,10 @@ pub fn plan_gif_upload(
     path: &Path,
     fps: Option<u8>,
     max_frames: Option<NonZeroUsize>,
+    placement: Placement,
     adjustments: &Adjustments,
 ) -> Result<GifPlan, MediaError> {
-    let gif = load_gif_frames(path, max_frames, adjustments)?;
+    let gif = load_gif_frames(path, max_frames, placement, adjustments)?;
     let frame_count = gif.frames.len();
     let rate = match fps {
         Some(f) => f,
@@ -638,6 +773,7 @@ pub fn plan_gif_upload(
     Ok(GifPlan {
         frames: gif.frames,
         panel_rgba: gif.panel_rgba,
+        placement,
         adjustments: *adjustments,
         rate,
         mode: protocol::GIF_MODE_SAVE_TO_DEVICE,
@@ -659,8 +795,12 @@ mod tests {
 
     #[test]
     fn missing_file_fails_as_a_picture_error_not_a_device_error() {
-        let err = load_and_encode_picture(Path::new("/nonexistent/nope.png"), &Adjustments::NONE)
-            .unwrap_err();
+        let err = load_and_encode_picture(
+            Path::new("/nonexistent/nope.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("nope.png"), "should name the file: {msg}");
         assert!(
@@ -674,7 +814,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.png");
         std::fs::write(&path, b"").unwrap();
-        assert!(load_and_encode_picture(&path, &Adjustments::NONE).is_err());
+        assert!(load_and_encode_picture(&path, Placement::Fill, &Adjustments::NONE).is_err());
     }
 
     #[test]
@@ -686,7 +826,7 @@ mod tests {
         let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
         bytes.extend_from_slice(b"not actually a png body at all");
         std::fs::write(&path, &bytes).unwrap();
-        assert!(load_and_encode_picture(&path, &Adjustments::NONE).is_err());
+        assert!(load_and_encode_picture(&path, Placement::Fill, &Adjustments::NONE).is_err());
     }
 
     #[test]
@@ -694,7 +834,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("notes.txt");
         std::fs::write(&path, b"this is plain text, not an image").unwrap();
-        assert!(load_and_encode_picture(&path, &Adjustments::NONE).is_err());
+        assert!(load_and_encode_picture(&path, Placement::Fill, &Adjustments::NONE).is_err());
     }
 
     #[test]
@@ -702,9 +842,12 @@ mod tests {
         // The committed test image is already 160x96, so this also confirms
         // the resize path is a no-op at the exact panel size rather than
         // shifting pixels.
-        let (pixels, _) =
-            load_and_encode_picture(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let (pixels, _) = load_and_encode_picture(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
 
         // Same bytes the vendor's own tool sent for this file: red top-left,
@@ -753,9 +896,12 @@ mod tests {
             v.try_into().unwrap()
         };
 
-        let (pixels, _) =
-            load_and_encode_picture(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let (pixels, _) = load_and_encode_picture(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let mut built = vec![protocol::build_picture_upload_start()];
         built.extend(protocol::build_picture_upload_body(&pixels));
 
@@ -775,6 +921,7 @@ mod tests {
     fn exif_orientation_is_actually_applied_to_jpegs() {
         let (pixels, _) = load_and_encode_picture(
             Path::new("fixtures/test-exif-rotated.jpg"),
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -846,9 +993,214 @@ mod tests {
         image::RgbImage::from_pixel(37, 211, image::Rgb([255, 0, 0]))
             .save(&path)
             .unwrap();
-        let (pixels, _) = load_and_encode_picture(&path, &Adjustments::NONE).unwrap();
+        let (pixels, _) =
+            load_and_encode_picture(&path, Placement::Fill, &Adjustments::NONE).unwrap();
         assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
         assert_eq!(&pixels[0..2], &[0xf8, 0x00]);
+    }
+
+    // --- Milestone 7: placement ---
+
+    #[test]
+    fn contain_geometry_matches_the_hand_computed_formula() {
+        // scale = min(160/161, 96/97) = 96/97; dst_w = js_round(161*96/97) =
+        // 159; dst_h = js_round(97*96/97) = 96; dst_x = js_round((160 -
+        // 159.34)/2) = 0; dst_y = js_round((96-96)/2) = 0.
+        assert_eq!(contain_geometry(161, 97), (0, 0, 159, 96));
+    }
+
+    #[test]
+    fn contain_on_a_degenerate_source_is_an_all_black_panel_no_panic() {
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            1,
+            10000,
+            image::Rgba([255, 0, 0, 255]),
+        ));
+        let panel = resize_to_panel(&img, Placement::Contain);
+        assert!(
+            panel.chunks_exact(4).all(|px| px == [0, 0, 0, 255]),
+            "a 1x10000 source rounds dst_w to 0 -- the panel must stay solid \
+             black, matching the vendor's drawImage-with-zero-width no-op"
+        );
+    }
+
+    #[test]
+    fn an_exactly_panel_sized_source_encodes_identically_under_both_placements() {
+        // Only an EXACT 160x96 source does no resizing at all under either
+        // mode -- Fill uses Nearest and Contain uses Lanczos3, so a
+        // same-aspect-ratio-but-different-size source would genuinely differ.
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            protocol::PANEL_W,
+            protocol::PANEL_H,
+            image::Rgba([12, 34, 56, 255]),
+        ));
+        let fill = adjust_and_encode(&resize_to_panel(&img, Placement::Fill), &Adjustments::NONE);
+        let contain = adjust_and_encode(
+            &resize_to_panel(&img, Placement::Contain),
+            &Adjustments::NONE,
+        );
+        assert_eq!(fill, contain);
+    }
+
+    #[test]
+    fn contain_padding_is_exactly_opaque_black() {
+        // A 1x1 source scales UP to fill the limiting dimension (Contain
+        // fits, it doesn't shrink-only) -- min(160,96) = 96, so it fills a
+        // centred 96x96 square, leaving 32px black bars on each side. Use
+        // `contain_geometry` itself to know exactly which pixels are
+        // guaranteed padding, rather than assuming the source stays 1x1.
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            1,
+            1,
+            image::Rgba([255, 255, 255, 255]),
+        ));
+        let (dst_x, dst_y, dst_w, dst_h) = contain_geometry(1, 1);
+        let panel = resize_to_panel(&img, Placement::Contain);
+        for (i, px) in panel.chunks_exact(4).enumerate() {
+            let x = (i as u32) % protocol::PANEL_W;
+            let y = (i as u32) / protocol::PANEL_W;
+            let inside = x >= dst_x && x < dst_x + dst_w && y >= dst_y && y < dst_y + dst_h;
+            if !inside {
+                assert_eq!(
+                    px,
+                    [0, 0, 0, 255],
+                    "padding pixel ({x},{y}) is not opaque black"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn contain_padding_receives_adjustments_a_documented_divergence_from_the_vendor() {
+        // The vendor bakes filters in BEFORE placement, so its padding stays
+        // pure black; this repo resizes before adjusting (Milestone 6's
+        // memory-driven order), so Contain's padding is an ordinary opaque
+        // black pixel to the filter pipeline like any other -- a documented,
+        // deliberate divergence, not a bug. Asserted directly rather than
+        // assumed.
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            1,
+            1,
+            image::Rgba([255, 255, 255, 255]),
+        ));
+        let panel_rgba = resize_to_panel(&img, Placement::Contain);
+        let brightened = adjust_and_encode(
+            &panel_rgba,
+            &Adjustments {
+                brightness: 0.5,
+                ..Adjustments::NONE
+            },
+        );
+        let plain = adjust_and_encode(&panel_rgba, &Adjustments::NONE);
+        // A corner pixel is guaranteed to be padding for a 1x1 source
+        // Contain-fit into a 160x96 panel.
+        let corner = |bytes: &[u8]| u16::from_be_bytes([bytes[0], bytes[1]]);
+        assert_ne!(
+            corner(&brightened),
+            corner(&plain),
+            "padding must be visibly affected by brightness, unlike the vendor"
+        );
+    }
+
+    #[test]
+    fn contain_preserves_alpha_in_the_image_region_padding_is_opaque() {
+        // Scoped to pictures (the resize/placement helper directly) -- GIF
+        // frames are already fully opaque by the time placement runs
+        // (`flatten_onto_black`), so this alpha variation only exists here.
+        for alpha in [0u8, 128, 255] {
+            let mut src = image::RgbaImage::new(1, 1);
+            src.put_pixel(0, 0, image::Rgba([200, 50, 25, alpha]));
+            let img = image::DynamicImage::ImageRgba8(src);
+            let panel = resize_to_panel(&img, Placement::Contain);
+            // The single source pixel Contain-fits to exactly fill one axis
+            // (1x1 into 160x96: scale = min(160,96) = 96, dst_w=dst_h=96,
+            // centred) -- sample its centre, guaranteed inside the source
+            // region, not the padding.
+            let cx = protocol::PANEL_W / 2;
+            let cy = protocol::PANEL_H / 2;
+            let o = ((cy * protocol::PANEL_W + cx) * 4) as usize;
+            assert_eq!(
+                panel[o + 3],
+                alpha,
+                "alpha {alpha} should survive the resize unpremultiplied in the \
+                 image region"
+            );
+        }
+    }
+
+    #[test]
+    fn a_transparent_pixel_does_not_bleed_into_a_resized_neighbour_under_contain() {
+        // Mirrors adjust.rs's own `a_transparent_pixel_does_not_bleed_into_its_neighbours`,
+        // but for the resize step Milestone 7 adds rather than the spatial
+        // filters Milestone 6 already covered.
+        let mut src = image::RgbaImage::new(4, 1);
+        src.put_pixel(0, 0, image::Rgba([255, 0, 0, 0])); // invisible red
+        src.put_pixel(1, 0, image::Rgba([0, 0, 0, 255]));
+        src.put_pixel(2, 0, image::Rgba([0, 0, 0, 255]));
+        src.put_pixel(3, 0, image::Rgba([0, 0, 0, 255]));
+        let img = image::DynamicImage::ImageRgba8(src);
+        let panel = resize_to_panel(&img, Placement::Contain);
+        // Every resulting pixel's red channel must stay 0 -- the hidden red
+        // must not leak into the resized, visible black neighbours.
+        assert!(
+            panel.chunks_exact(4).all(|px| px[0] == 0),
+            "hidden red bled into a resized neighbour"
+        );
+    }
+
+    #[test]
+    fn plan_picture_upload_carries_its_placement() {
+        let plan = plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Contain,
+            &Adjustments::NONE,
+        )
+        .unwrap();
+        assert_eq!(plan.placement, Placement::Contain);
+    }
+
+    #[test]
+    fn plan_gif_upload_carries_its_placement() {
+        let plan = plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            None,
+            None,
+            Placement::Contain,
+            &Adjustments::NONE,
+        )
+        .unwrap();
+        assert_eq!(plan.placement, Placement::Contain);
+    }
+
+    #[test]
+    fn every_gif_frame_respects_the_selected_placement() {
+        // Mirrors Milestone 6's `every_gif_frame_is_adjusted` test shape --
+        // every frame, not just the first, must go through `resize_to_panel`
+        // with the chosen placement.
+        let contain = plan_gif_upload(
+            Path::new("fixtures/test-anim-disposal.gif"),
+            None,
+            None,
+            Placement::Contain,
+            &Adjustments::NONE,
+        )
+        .unwrap();
+        let fill = plan_gif_upload(
+            Path::new("fixtures/test-anim-disposal.gif"),
+            None,
+            None,
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
+        assert_eq!(contain.frames.len(), fill.frames.len());
+        for (i, (c, f)) in contain.frames.iter().zip(fill.frames.iter()).enumerate() {
+            assert_ne!(
+                c, f,
+                "frame {i}: a 64x48 source into a 160x96 panel must differ \
+                 between Contain and Fill, or this frame wasn't placed at all"
+            );
+        }
     }
 
     fn gif_px(pixels: &[u8], x: usize, y: usize) -> u16 {
@@ -879,6 +1231,7 @@ mod tests {
         let gif = load_gif_frames(
             Path::new("fixtures/test-anim-disposal.gif"),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -938,6 +1291,7 @@ mod tests {
         let gif = load_gif_frames(
             Path::new("fixtures/test-anim-disposal-background.gif"),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -996,6 +1350,7 @@ mod tests {
         let gif = load_gif_frames(
             Path::new("fixtures/test-anim-variable-delay.gif"),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -1035,6 +1390,7 @@ mod tests {
         let gif = load_gif_frames(
             Path::new("fixtures/test-anim-too-fast.gif"),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -1110,6 +1466,7 @@ mod tests {
         let gif = load_gif_frames(
             Path::new("fixtures/test-anim-too-slow.gif"),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -1148,7 +1505,13 @@ mod tests {
             "fixtures/test-anim-too-fast.gif",
             "fixtures/test-anim-too-slow.gif",
         ] {
-            let gif = load_gif_frames(Path::new(fixture), None, &Adjustments::NONE).unwrap();
+            let gif = load_gif_frames(
+                Path::new(fixture),
+                None,
+                Placement::Fill,
+                &Adjustments::NONE,
+            )
+            .unwrap();
 
             // With no --fps the note is printed...
             assert!(
@@ -1187,7 +1550,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = load_gif_frames(&path, None, &Adjustments::NONE)
+        let err = load_gif_frames(&path, None, Placement::Fill, &Adjustments::NONE)
             .expect_err("no frames must not succeed");
         let msg = err.to_string();
         assert!(
@@ -1207,6 +1570,7 @@ mod tests {
         let gif = load_gif_frames(
             Path::new("fixtures/test-anim-zero-delay.gif"),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -1233,6 +1597,7 @@ mod tests {
         let gif = load_gif_frames(
             Path::new("fixtures/test-anim-2frames.gif"),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -1250,23 +1615,24 @@ mod tests {
 
         let txt = dir.path().join("notes.txt");
         std::fs::write(&txt, b"not a gif").unwrap();
-        assert!(load_gif_frames(&txt, None, &Adjustments::NONE).is_err());
+        assert!(load_gif_frames(&txt, None, Placement::Fill, &Adjustments::NONE).is_err());
 
         let empty = dir.path().join("empty.gif");
         std::fs::write(&empty, b"").unwrap();
-        assert!(load_gif_frames(&empty, None, &Adjustments::NONE).is_err());
+        assert!(load_gif_frames(&empty, None, Placement::Fill, &Adjustments::NONE).is_err());
 
         // A PNG is a valid image but not a GIF.
         assert!(
             load_gif_frames(
                 Path::new("fixtures/test-quadrants.png"),
                 None,
+                Placement::Fill,
                 &Adjustments::NONE
             )
             .is_err()
         );
 
-        let err = load_gif_frames(&txt, None, &Adjustments::NONE)
+        let err = load_gif_frames(&txt, None, Placement::Fill, &Adjustments::NONE)
             .unwrap_err()
             .to_string();
         assert!(
@@ -1336,6 +1702,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             None,
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -1360,7 +1727,14 @@ mod tests {
             ("fixtures/test-anim-zero-delay.gif", "as fast as possible"),
         ];
         for (fixture, expected) in cases {
-            let plan = plan_gif_upload(Path::new(fixture), None, None, &Adjustments::NONE).unwrap();
+            let plan = plan_gif_upload(
+                Path::new(fixture),
+                None,
+                None,
+                Placement::Fill,
+                &Adjustments::NONE,
+            )
+            .unwrap();
             assert_eq!(
                 plan.notes.len(),
                 2,
@@ -1396,8 +1770,14 @@ mod tests {
             "fixtures/test-anim-too-slow.gif",
             "fixtures/test-anim-zero-delay.gif",
         ] {
-            let plan =
-                plan_gif_upload(Path::new(fixture), Some(24), None, &Adjustments::NONE).unwrap();
+            let plan = plan_gif_upload(
+                Path::new(fixture),
+                Some(24),
+                None,
+                Placement::Fill,
+                &Adjustments::NONE,
+            )
+            .unwrap();
             assert_eq!(plan.rate, 24);
             assert_eq!(
                 plan.notes.len(),
@@ -1417,6 +1797,7 @@ mod tests {
             Path::new("fixtures/test-anim-18frames.gif"),
             Some(30),
             Some(NonZeroUsize::new(9).unwrap()),
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -1448,6 +1829,7 @@ mod tests {
             Path::new("fixtures/test-anim-18frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -1460,9 +1842,12 @@ mod tests {
     /// both on stdout.
     #[test]
     fn the_picture_planner_describes_the_upload_on_stdout() {
-        let plan =
-            plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let plan = plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(plan.pixels.len(), protocol::PICTURE_BYTES);
         assert_eq!(plan.total_reports, protocol::picture_upload_report_count());
         assert_eq!(
@@ -1483,6 +1868,7 @@ mod tests {
             Path::new("fixtures/test-quadrants.png"),
             None,
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .expect_err("a PNG is not a GIF");
@@ -1509,9 +1895,12 @@ mod tests {
     /// milestone.
     #[test]
     fn no_adjustments_means_the_plain_encode() {
-        let plan =
-            plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let plan = plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(plan.pixels.len(), protocol::PICTURE_BYTES);
         assert_eq!(
             plan.pixels,
@@ -1524,9 +1913,12 @@ mod tests {
     /// can re-adjust from pristine data.
     #[test]
     fn plans_carry_the_unadjusted_panel_pixels() {
-        let plan =
-            plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let plan = plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(
             plan.panel_rgba.len(),
             protocol::PANEL_W as usize * protocol::PANEL_H as usize * 4
@@ -1536,6 +1928,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -1551,10 +1944,18 @@ mod tests {
             grayscale: true,
             ..Adjustments::NONE
         };
-        let planned = plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &adj).unwrap();
-        let unadjusted =
-            plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let planned = plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &adj,
+        )
+        .unwrap();
+        let unadjusted = plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
 
         assert_ne!(
             planned.pixels, unadjusted.pixels,
@@ -1578,6 +1979,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -1585,6 +1987,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &adj,
         )
         .unwrap();

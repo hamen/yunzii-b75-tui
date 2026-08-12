@@ -230,6 +230,10 @@ fn confirm(f: &mut Frame, area: Rect, pending: &Pending) {
                 ),
                 _ => String::new(),
             },
+            Row::Placement => match pending.placement() {
+                crate::plan::Placement::Contain => "contain".to_string(),
+                crate::plan::Placement::Fill => "fill".to_string(),
+            },
             Row::Brightness => format!("{:+.2}", adj.brightness),
             Row::Chroma => format!("{:+.2}", adj.chroma),
             Row::Saturation => format!("{:+.2}", adj.saturation),
@@ -392,6 +396,7 @@ mod tests {
     use super::*;
     use crate::adjust::Adjustments;
     use crate::plan;
+    use crate::plan::Placement;
     use crate::tui::app::{DeviceState, Key, Update};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -496,9 +501,12 @@ mod tests {
 
     #[test]
     fn the_preview_pane_draws_half_blocks() {
-        let plan =
-            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let plan = plan::plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let mut a = app_ready();
         a.screen = Screen::Confirm(Box::new(Pending::Picture {
             path: PathBuf::from("fixtures/test-quadrants.png"),
@@ -524,6 +532,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             None,
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -579,9 +588,12 @@ mod tests {
     /// metadata survives, which is the part you cannot guess by looking.
     #[test]
     fn a_narrow_terminal_keeps_the_facts_and_drops_the_picture() {
-        let plan =
-            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let plan = plan::plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let mut a = app_ready();
         a.screen = Screen::Confirm(Box::new(Pending::Picture {
             path: PathBuf::from("p.png"),
@@ -590,7 +602,12 @@ mod tests {
             row: 0,
         }));
 
-        let narrow = render_at(&a, 24, 20);
+        // Height bumped from 20 to 21: Milestone 7 added a `Placement` row,
+        // one more line the picture's 7 rows (was 6) need before the notes
+        // -- otherwise "30720 bytes" is pushed off a height this test never
+        // meant to test the boundary of. The point here is narrow-hides-the-
+        // picture, not the exact row count that fits.
+        let narrow = render_at(&a, 24, 21);
         assert!(
             !narrow.contains('▀'),
             "no half-blocks in a pane this size:\n{narrow}"
@@ -627,6 +644,7 @@ mod tests {
             Path::new("fixtures/test-anim-too-fast.gif"),
             None,
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -664,9 +682,12 @@ mod tests {
     /// The rate hint belongs only to GIFs.
     #[test]
     fn a_picture_confirm_does_not_offer_a_rate() {
-        let plan =
-            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let plan = plan::plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let mut a = app_ready();
         a.screen = Screen::Confirm(Box::new(Pending::Picture {
             path: PathBuf::from("p.png"),
@@ -698,6 +719,7 @@ mod tests {
             Path::new("fixtures/test-anim-too-fast.gif"),
             None,
             None,
+            Placement::Fill,
             &crate::adjust::Adjustments::NONE,
         )
         .unwrap();
@@ -713,6 +735,7 @@ mod tests {
         let out = render_at(&a, 80, 24);
         for label in [
             "Rate",
+            "Placement",
             "Brightness",
             "Chroma",
             "Saturation",

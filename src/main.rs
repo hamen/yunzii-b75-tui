@@ -118,6 +118,31 @@ impl From<PageArg> for protocol::Page {
     }
 }
 
+/// The vendor's "Location" setting on the Screen Settings panel.
+///
+/// Sends no HID at all -- a client-side resize choice (see PROTOCOL.md).
+/// `Fill` is the vendor's "Cover up completely", but despite the name it is
+/// CSS `object-fit: fill` (plain stretch), not `cover` (crop-to-fill): the
+/// vendor's own resize function draws the whole source into the full
+/// destination rectangle, no cropping.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PlacementArg {
+    /// Scale to fit inside the panel, preserving aspect ratio, centered,
+    /// padded with black. The vendor's own default ("In the middle").
+    Contain,
+    /// Stretch to exactly fill the panel; aspect ratio is not preserved.
+    Fill,
+}
+
+impl From<PlacementArg> for plan::Placement {
+    fn from(arg: PlacementArg) -> Self {
+        match arg {
+            PlacementArg::Contain => plan::Placement::Contain,
+            PlacementArg::Fill => plan::Placement::Fill,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Set the keyboard's clock and date to the current local time.
@@ -139,17 +164,22 @@ enum Commands {
     ClearGif,
     /// Upload a PNG or JPEG to the TFT screen.
     ///
-    /// The image is stretched to the panel's fixed 160x96 with
-    /// nearest-neighbour sampling -- the same as the vendor's tool, which
-    /// draws with image smoothing switched off. Aspect ratio is not
-    /// preserved. Fully transparent pixels become black; partial
-    /// transparency keeps its full colour rather than blending. EXIF
-    /// orientation is applied, so photos straight off a phone are not
-    /// uploaded sideways. Uploading also switches the panel to the picture
-    /// page, so no separate switch-page is needed.
+    /// The image is fit into the panel's fixed 160x96 per `--placement`
+    /// (default `contain`, matching the vendor's own default -- scales to
+    /// fit, padded with black; `fill` stretches to cover the whole panel
+    /// with `imageSmoothingEnabled = false`-equivalent (nearest-neighbour)
+    /// sampling, matching the vendor's real picture-save handler for that
+    /// case, aspect ratio not preserved). Fully transparent pixels become
+    /// black; partial transparency keeps its full colour rather than
+    /// blending. EXIF orientation is applied, so photos straight off a
+    /// phone are not uploaded sideways. Uploading also switches the panel
+    /// to the picture page, so no separate switch-page is needed.
     SetPicture {
         /// Path to a PNG or JPEG file.
         path: PathBuf,
+        /// How to fit the image into the panel. Without it, `contain`.
+        #[arg(long, value_enum)]
+        placement: Option<PlacementArg>,
         /// Brightness, -1.0 to 1.0. 0 leaves it alone.
         #[arg(long, value_parser = parse_unit, allow_negative_numbers = true)]
         brightness: Option<f64>,
@@ -177,16 +207,20 @@ enum Commands {
     },
     /// Upload an animated GIF to the TFT screen.
     ///
-    /// Every frame is stretched to the panel's fixed 160x96 the same way
-    /// set-picture does. GIF frame position, transparency and disposal are
-    /// applied, so optimised GIFs work. The keyboard animates at one rate for
-    /// the whole animation and stores at most 160 frames.
+    /// Every frame is fit into the panel's fixed 160x96 per `--placement`
+    /// (default `contain`), the same way set-picture does. GIF frame
+    /// position, transparency and disposal are applied, so optimised GIFs
+    /// work. The keyboard animates at one rate for the whole animation and
+    /// stores at most 160 frames.
     ///
     /// An upload takes roughly a second per frame, because the device pauses
     /// three seconds every sixteenth frame.
     SetGif {
         /// Path to a GIF file.
         path: PathBuf,
+        /// How to fit each frame into the panel. Without it, `contain`.
+        #[arg(long, value_enum)]
+        placement: Option<PlacementArg>,
         /// Brightness, -1.0 to 1.0. 0 leaves it alone.
         #[arg(long, value_parser = parse_unit, allow_negative_numbers = true)]
         brightness: Option<f64>,
@@ -306,6 +340,7 @@ fn main() {
         Commands::ClearGif => run_clear_gif().map_err(Into::into),
         Commands::SetPicture {
             path,
+            placement,
             dry_run,
             brightness,
             chroma,
@@ -315,6 +350,7 @@ fn main() {
             blur,
         } => run_set_picture(
             &path,
+            placement.map(Into::into).unwrap_or_default(),
             dry_run,
             &Adjustments {
                 brightness: brightness.unwrap_or(0.0),
@@ -327,6 +363,7 @@ fn main() {
         ),
         Commands::SetGif {
             path,
+            placement,
             fps,
             max_frames,
             dry_run,
@@ -340,6 +377,7 @@ fn main() {
             &path,
             fps,
             max_frames,
+            placement.map(Into::into).unwrap_or_default(),
             dry_run,
             &Adjustments {
                 brightness: brightness.unwrap_or(0.0),
@@ -513,6 +551,7 @@ fn run_set_gif(
     path: &Path,
     fps: Option<u8>,
     max_frames: Option<NonZeroUsize>,
+    placement: plan::Placement,
     dry_run: bool,
     adjustments: &Adjustments,
 ) -> Result<(), AppError> {
@@ -523,7 +562,7 @@ fn run_set_gif(
     if let Some(s) = adjustments.summary() {
         println!("adjustments: {s}");
     }
-    let plan = plan::plan_gif_upload(path, fps, max_frames, adjustments)?;
+    let plan = plan::plan_gif_upload(path, fps, max_frames, placement, adjustments)?;
     print_notes(&plan.notes);
 
     // The plan is self-consistent before anything is sent. Same reasoning as
@@ -570,11 +609,16 @@ fn run_set_gif(
     Ok(())
 }
 
-fn run_set_picture(path: &Path, dry_run: bool, adjustments: &Adjustments) -> Result<(), AppError> {
+fn run_set_picture(
+    path: &Path,
+    placement: plan::Placement,
+    dry_run: bool,
+    adjustments: &Adjustments,
+) -> Result<(), AppError> {
     // Decode FIRST, before opening the device: a missing or corrupt file
     // should say so, not fail with "device not found" on a machine with no
     // keyboard plugged in.
-    let plan = plan::plan_picture_upload(path, adjustments)?;
+    let plan = plan::plan_picture_upload(path, placement, adjustments)?;
     if let Some(s) = adjustments.summary() {
         println!("adjustments: {s}");
     }
@@ -671,6 +715,7 @@ mod cli_tests {
             Path::new("fixtures/test-anim-too-fast.gif"),
             None,
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -707,6 +752,7 @@ mod cli_tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -776,6 +822,45 @@ mod cli_tests {
                 );
             }
         }
+    }
+
+    /// `--placement` accepts the vendor's two real values (kebab-case, from
+    /// clap's `ValueEnum` derive), rejects anything else, and defaults to
+    /// `None` (i.e. `Placement::Contain` once `.unwrap_or_default()` runs)
+    /// when absent -- on both commands.
+    #[test]
+    fn clap_accepts_contain_and_fill_and_rejects_anything_else_on_both_commands() {
+        for cmd in ["set-picture", "set-gif"] {
+            for value in ["contain", "fill"] {
+                assert!(
+                    Cli::try_parse_from(["yunzii-b75-tui", cmd, "f", "--placement", value]).is_ok(),
+                    "{cmd} --placement {value}"
+                );
+            }
+            assert!(
+                Cli::try_parse_from(["yunzii-b75-tui", cmd, "f", "--placement", "cover"]).is_err(),
+                "{cmd} --placement cover -- the vendor's own UI label, not this flag's value"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_placement_means_the_default_contain() {
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "set-picture", "p.png"]).unwrap();
+        let Commands::SetPicture { placement, .. } = cli.command.unwrap() else {
+            panic!("expected SetPicture");
+        };
+        assert!(placement.is_none());
+        let resolved: plan::Placement = placement.map(Into::into).unwrap_or_default();
+        assert_eq!(resolved, plan::Placement::Contain);
+
+        let cli =
+            Cli::try_parse_from(["yunzii-b75-tui", "set-gif", "a.gif", "--placement", "fill"])
+                .unwrap();
+        let Commands::SetGif { placement, .. } = cli.command.unwrap() else {
+            panic!("expected SetGif");
+        };
+        assert_eq!(placement.map(Into::into), Some(plan::Placement::Fill));
     }
 
     /// The parsed values reach the command, and absent means zero rather than

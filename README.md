@@ -38,12 +38,21 @@ on real hardware.
 `switch-page` now takes `gif` too. Milestone 2 withheld it believing cmd15 did
 not switch the panel; the real cause turned out to be the *save*, not the
 switch -- the vendor's GIF save has three modes and every early test used mode
-0 ("set it as the startup animation"), which stores frames somewhere that never
-plays. `set-gif` uses mode 1, and the animation appears immediately.
+0 ("set it as the startup animation"), which stores frames somewhere with no
+known way to make them play (the GIF page and power-up/replug both don't show
+it, though the search hasn't been exhaustive). `set-gif` uses mode 1, and the
+animation appears immediately.
 
 **🖥️ There's a TUI now.** Run the binary with no subcommand. **Picture
 adjustments** (brightness, chroma, saturation, grayscale, sharpen, blur) work
 too, on both upload commands and in the interface.
+
+**🎛️ `--placement contain|fill`** now controls how an image fits the panel
+(default `contain`, matching the vendor's own default). **🧹 `clear-gif`**
+ships too, decoded from a live capture -- its bytes are confirmed accepted
+by the device, but not yet independently confirmed to erase the stored
+animation rather than just the live display (see `PROTOCOL.md`).
+
 ---
 
 ## 🖥️ The interface
@@ -70,17 +79,21 @@ Three things the CLI cannot do:
 - **A progress bar with a real countdown.** An upload is forty-five seconds of
   frame lines otherwise.
 - **A preview.** It draws the frame the device will actually receive — after
-  the stretch to 160×96, in half-blocks, two pixels per cell — so you see what
-  the panel will show *before* sending it. Choosing a file only previews it;
-  a second Enter uploads.
+  placement has fit it into 160×96, in half-blocks, two pixels per cell — so
+  you see what the panel will show *before* sending it. Choosing a file only
+  previews it; a second Enter uploads.
 - **Cancel.** Esc stops between reports and during the firmware's own pauses.
   There is no abort in the protocol, so it warns that the animation is partial.
 
 The confirm screen is a list of rows: `↑`/`↓` moves between them, `←`/`→`
 changes the selected one, `space` toggles a switch, and `0` resets every
 adjustment. **Rate** is the first row, so the arrows still change the frame
-rate — the same as `--fps` — until you move off it. Below it sit the six
-picture adjustments described further down.
+rate — the same as `--fps` — until you move off it. Below it sits
+**Placement** (`space` toggles `contain`/`fill`; toggling it re-fits every
+frame from the source on the worker thread, showing "recomputing
+placement..." while it runs, since a placement change can't be recomputed as
+cheaply as a slider can), then the six picture adjustments described further
+down.
 The keyboard is re-scanned every two seconds when it is missing, and the
 header says *why* it is missing — not found, permission denied, or two devices
 matching — because the fix differs each time.
@@ -105,15 +118,26 @@ sudo usermod -aG plugdev "$USER"   # only if the node stays root-only; needs re-
 ./target/release/yunzii-b75-tui set-picture logo.png
 ./target/release/yunzii-b75-tui set-gif mascot.gif --fps 12
 ./target/release/yunzii-b75-tui set-gif mascot.gif --dry-run   # what would happen
+./target/release/yunzii-b75-tui clear-gif
 ```
 
 ### 🎨 `set-picture`
 
-Takes a **PNG or JPEG**. The panel is a fixed **160×96**, and the image is
-stretched to fill it with nearest-neighbour sampling — the same as the
-vendor's tool, which draws with image smoothing switched off. **Aspect ratio
-is not preserved.** Crop or letterbox the file yourself first if that
-matters.
+Takes a **PNG or JPEG**. The panel is a fixed **160×96**, and `--placement`
+decides how the image fills it:
+
+- **`contain`** (the default, matching the vendor's own default): scales the
+  image to fit inside the panel, aspect ratio preserved, centred, with the
+  leftover padded **black**.
+- **`fill`**: stretches the image to exactly cover the panel with
+  nearest-neighbour sampling — the same as the vendor's tool, which draws
+  with image smoothing switched off. **Aspect ratio is not preserved.**
+
+The vendor's own UI calls this "Location" — "In the middle" (`contain`) and
+"Cover up completely" (`fill`); despite that second name, it is a plain
+stretch, not a crop (CSS `object-fit: fill`, not `cover`). It sends no HID
+traffic at all: a client-side resize decision, decoded from the vendor's own
+JS rather than captured on the wire (see `PROTOCOL.md`).
 
 - **Fully transparent** pixels become **black**. Partial transparency keeps
   its full colour — the alpha value is discarded, not blended, which is what
@@ -134,7 +158,8 @@ a half-finished upload leaves a partially-written frame on the panel, and
 the fix is to re-run `set-picture` or run `clear-picture`.
 
 `clear-picture` sends 32 reports (16 repeats), with the same partial-failure
-caveat.
+caveat. `clear-gif` (below) is a separate command for a stored GIF —
+`clear-picture` is not known to also clear one.
 
 ### 🎛️ Picture adjustments
 
@@ -170,16 +195,17 @@ Order is fixed — brightness, chroma, saturation, grayscale, sharpen, blur —
 because the vendor's depends on which switch you clicked first, which is a bug
 rather than a specification.
 
-Adjustments apply at panel size, after the stretch to 160×96. `--dry-run`
-prints which are active.
+Adjustments apply at panel size, after placement has already fit the image
+into 160×96 (`--placement`, see above). `--dry-run` prints which are active.
 
 ### 🎞️ `set-gif`
 
 Takes an animated **GIF** and plays it on the panel.
 
-- Frames are stretched to 160×96 the same way `set-picture` does. GIF frame
-  position, transparency and **disposal** are applied, so optimised GIFs — the
-  normal kind — work correctly.
+- Each frame is fit into 160×96 per `--placement` (default `contain`, same as
+  `set-picture` — see above). GIF frame position, transparency and
+  **disposal** are applied, so optimised GIFs — the normal kind — work
+  correctly.
 - **`--fps` is literal frames per second**, 1–60. Without it, the GIF's own
   rate is used when its frame delays are uniform **and** land inside 1–60.
   Otherwise the upload falls back to 30 fps and says why — either the delays
@@ -196,8 +222,8 @@ Takes an animated **GIF** and plays it on the panel.
   seconds every sixteenth frame, which looks like a flash write. The CLI prints
   an estimate up front and a line per frame, so it is visibly working.
 - If an upload fails part-way the animation may be incomplete; re-run
-  `set-gif`. Note `clear-picture` is *not* known to clear a GIF, and there is
-  no `clear-gif` command yet.
+  `set-gif`. Note `clear-picture` is *not* known to clear a GIF -- use
+  `clear-gif` instead, a separate command (see below).
 - **`--dry-run`** decodes the file, reports the frame count, the rate it would
   use and how long the upload would take, then stops without contacting the
   keyboard. Worth it before a long one: a 160-frame GIF takes two and a half
@@ -209,6 +235,20 @@ byte-for-byte, and `PROTOCOL.md` explains why: the vendor resamples each frame
 through a browser canvas, which cannot be reproduced outside a browser. The
 transport is byte-identical; the pixels are ours. For pixel art the result is
 usually sharper than the vendor's.
+
+### 🧹 `clear-gif`
+
+Clears the stored GIF animation. Decoded from a live capture of the vendor's
+own "Clear GIF" button (Equipment setup tab): 4 reports, two different
+`infoPackage(0x40) -> finish(0x42)` pairs (cmd18 then cmd19), no repeat loop
+— structurally unrelated to `clear-picture` despite the vendor's own internal
+naming suggesting otherwise (see `PROTOCOL.md`). No `--dry-run`, same as
+`clear-picture`.
+
+The device ACKing all 4 reports proves it accepted them; it does not by
+itself prove the stored animation is actually erased rather than just the
+live display clearing — that needs a visual check (save a GIF, run
+`clear-gif`, reconnect the keyboard, confirm the old GIF does not come back).
 
 The udev rule is limited to **interface 1**, the configuration channel this
 tool talks to. That limit is the point: interface 0 is the keyboard itself, so

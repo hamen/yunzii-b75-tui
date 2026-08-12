@@ -39,12 +39,14 @@ use image::RgbaImage;
 
 /// One panel-sized frame's worth of adjustments.
 ///
-/// Applied at 160x96, after any flattening and the resize, immediately before
-/// the RGB565 encode. Not at full resolution: a 160-frame GIF from a 4K source
-/// would be gigabytes of RGBA, and running six filters over that on every
-/// keypress would stall the interface. Sharpening a nearest-neighbour
-/// downscale is harsher than sharpening the original would have been -- that
-/// is the trade, and the panel is 160x96 anyway.
+/// Applied at 160x96, after any flattening and the resize/placement,
+/// immediately before the RGB565 encode. Not at full resolution: a
+/// 160-frame GIF from a 4K source would be gigabytes of RGBA, and running
+/// six filters over that on every keypress would stall the interface.
+/// Sharpening an already-resized source is harsher than sharpening the
+/// original would have been, regardless of which resize filter placement
+/// used (`Fill`'s nearest-neighbour or `Contain`'s Lanczos3) -- that is the
+/// trade, and the panel is 160x96 anyway.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Adjustments {
     /// -1.0 ..= 1.0
@@ -188,7 +190,7 @@ fn to_u8(v: f64) -> u8 {
 }
 
 /// JavaScript `Math.round`: `floor(x + 0.5)`, so halves go toward +infinity.
-fn js_round(v: f64) -> f64 {
+pub(crate) fn js_round(v: f64) -> f64 {
     (v + 0.5).floor()
 }
 
