@@ -76,7 +76,11 @@ Three things the CLI cannot do:
 - **Cancel.** Esc stops between reports and during the firmware's own pauses.
   There is no abort in the protocol, so it warns that the animation is partial.
 
-`←`/`→` on the confirm screen change the frame rate, the same as `--fps`.
+The confirm screen is a list of rows: `↑`/`↓` moves between them, `←`/`→`
+changes the selected one, `space` toggles a switch, and `0` resets every
+adjustment. **Rate** is the first row, so the arrows still change the frame
+rate — the same as `--fps` — until you move off it. Below it sit the six
+picture adjustments described further down.
 The keyboard is re-scanned every two seconds when it is missing, and the
 header says *why* it is missing — not found, permission denied, or two devices
 matching — because the fix differs each time.

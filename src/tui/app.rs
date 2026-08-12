@@ -851,7 +851,10 @@ fn adjust_row(p: &mut Pending, row: Row, up: bool) -> bool {
                 Row::Chroma => &mut adj.chroma,
                 _ => &mut adj.saturation,
             };
-            // Rounded to the step so repeated presses cannot drift off it.
+            // Snapped to the step grid so repeated presses cannot drift off
+            // it. Rust's `round` on purpose, not `js_round`: this is where a
+            // key lands on a slider, not pixel arithmetic, and there is no
+            // vendor behaviour to match.
             let next = ((*field + step) / ADJUST_STEP).round() * ADJUST_STEP;
             let next = next.clamp(-1.0, 1.0);
             let changed = next != *field;
