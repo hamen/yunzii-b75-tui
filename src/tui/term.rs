@@ -108,15 +108,27 @@ impl<T: Term> Drop for Guard<T> {
 /// order nobody should have to reason about; the hook runs first and the
 /// guard's idempotence makes the later drop a no-op.
 pub fn install_panic_hook(restored: Arc<AtomicBool>) {
+    let ui_thread = std::thread::current().id();
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if !restored.swap(true, Ordering::SeqCst) {
+        if owns_the_terminal(ui_thread) && !restored.swap(true, Ordering::SeqCst) {
             let t = RealTerm;
             let _ = t.leave_alt();
             let _ = t.disable_raw();
         }
         previous(info);
     }));
+}
+
+/// Whether the panicking thread is the one drawing.
+///
+/// A panic hook is process-wide, so a panic on the **worker** thread runs it
+/// too. The worker catches its own panics and carries on, so restoring there
+/// would hand the terminal back while the interface is still drawing into it:
+/// the alternate screen gone, raw mode off, and a UI merrily painting over the
+/// user's shell. Only the thread that owns the terminal may give it back.
+fn owns_the_terminal(ui_thread: std::thread::ThreadId) -> bool {
+    std::thread::current().id() == ui_thread
 }
 
 #[cfg(test)]
@@ -239,6 +251,22 @@ mod tests {
             vec![Op::EnableRaw, Op::EnterAlt, Op::LeaveAlt, Op::DisableRaw],
             "the drop guard runs during unwind"
         );
+    }
+
+    /// A panic on a background thread must not restore the terminal.
+    ///
+    /// The hook is process-wide, so it runs for every thread. The worker
+    /// catches its own panics and keeps going, so a restore there would give
+    /// the terminal back while the interface is still drawing into it.
+    #[test]
+    fn only_the_drawing_thread_may_restore() {
+        let ui = std::thread::current().id();
+        assert!(owns_the_terminal(ui), "the UI thread may");
+
+        let elsewhere = std::thread::spawn(move || owns_the_terminal(ui))
+            .join()
+            .unwrap();
+        assert!(!elsewhere, "a worker thread may not");
     }
 
     /// A hook sharing the guard's flag restores exactly once between them.

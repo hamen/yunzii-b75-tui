@@ -291,8 +291,11 @@ fn upload(
     match body(&mut cx) {
         Ok(()) => Ok(format!("{label}: done")),
         Err(e) => {
+            // A cancellation says nothing about the device; anything else does,
+            // and the interface must stop claiming a keyboard immediately
+            // rather than at the next probe two seconds later.
             if !matches!(e, DeviceError::Cancelled { .. }) {
-                ready.store(false, Ordering::Relaxed);
+                lost(tx, ready);
             }
             Err(e
                 .with_reconnect_hint(&path)
@@ -441,5 +444,41 @@ mod tests {
     fn probing_always_yields_a_describable_state() {
         let state = probe();
         assert!(!state.summary().is_empty());
+    }
+
+    /// A job that cannot reach a device tells the interface the device is
+    /// gone, not just its own discovery flag.
+    ///
+    /// Clearing `ready` alone only restarts probing; without the update the
+    /// header keeps its green dot and its actions keep looking available until
+    /// the next probe. That gap was the bug: the test for it used to send the
+    /// missing update by hand, so it proved nothing about the worker.
+    #[test]
+    fn a_job_that_cannot_open_the_device_reports_it_lost() {
+        let (tx, rx) = mpsc::channel();
+        let flags = Flags::default();
+        flags.ready.store(true, Ordering::Relaxed);
+
+        // `open_reporting` is the shared entry every device job goes through.
+        // On this machine it either succeeds (a keyboard is attached) or
+        // fails; only the failure is interesting, and it must announce itself.
+        if open_reporting(&tx, &flags.ready).is_err() {
+            let update = rx
+                .try_recv()
+                .expect("a failure to open must be announced, not just recorded");
+            assert!(matches!(update, Update::Device(_)), "got {update:?}");
+            assert!(!flags.ready.load(Ordering::Relaxed));
+        } else {
+            // A keyboard is attached, so the failure path cannot be reached
+            // here. `lost()` is the whole of it, and it is asserted directly.
+            let (tx2, rx2) = mpsc::channel();
+            let ready = Arc::new(AtomicBool::new(true));
+            lost(&tx2, &ready);
+            assert!(!ready.load(Ordering::Relaxed));
+            assert!(matches!(
+                rx2.try_recv().unwrap(),
+                Update::Device(DeviceState::NotFound)
+            ));
+        }
     }
 }

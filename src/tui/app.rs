@@ -442,9 +442,10 @@ impl App {
 
         match key {
             Key::Esc | Key::Char('q') => {
-                // Anything still decoding is no longer wanted.
+                // The result is no longer wanted, but the worker is still
+                // decoding: `job_pending` stays set until it answers, or the
+                // menu could hand it a second job while it is busy.
                 self.preview_generation += 1;
-                self.job_pending = false;
                 self.screen = Screen::Menu;
                 None
             }
@@ -529,7 +530,10 @@ impl App {
                     } else {
                         (current + 1).min(crate::protocol::GIF_FPS_MAX)
                     };
-                    *rate_override = Some(next);
+                    // Arrowing back to the file's own rate is not a choice to
+                    // override it, so the fallback note applies again. Leaving
+                    // it as Some(native) would suppress a warning that is true.
+                    *rate_override = (next != plan.rate).then_some(next);
                 }
                 None
             }
@@ -586,12 +590,13 @@ impl App {
                 self.device = d;
             }
             Update::Preview { generation, result } => {
-                // A reply for a request that has been superseded or abandoned.
-                // Applying it would drag the user into a screen they left.
+                // The worker is free either way -- that is what this says.
+                self.job_pending = false;
+                // But a reply for a superseded or abandoned request is not
+                // applied: it would drag the user into a screen they left.
                 if generation != self.preview_generation {
                     return;
                 }
-                self.job_pending = false;
                 match *result {
                     Ok(pending) => self.screen = Screen::Confirm(Box::new(pending)),
                     Err(e) => {
@@ -1325,6 +1330,10 @@ mod tests {
     }
 
     /// A device that fails mid-job stops looking available immediately.
+    ///
+    /// The interface half of the contract; `worker::tests` covers the other
+    /// half -- that the worker actually sends the update rather than only
+    /// clearing its own flag, which was the bug.
     #[test]
     fn a_failed_job_takes_the_green_dot_away() {
         let mut a = app_ready();
@@ -1333,5 +1342,62 @@ mod tests {
         a.on_update(Update::Finished(Err("I/O error: broken pipe".into())));
         assert!(!a.actions_enabled(), "no action may look available now");
         assert!(!a.device.is_ready());
+    }
+
+    /// Discarding a preview does not free the worker: it is still decoding.
+    #[test]
+    fn leaving_the_browser_does_not_unlock_a_busy_worker() {
+        let mut a = app_ready();
+        a.screen = Screen::Browse {
+            for_gif: true,
+            dir: PathBuf::from("fixtures"),
+            entries: vec![Entry {
+                name: "test-anim-2frames.gif".into(),
+                path: PathBuf::from("fixtures/test-anim-2frames.gif"),
+                is_dir: false,
+            }],
+            selected: 0,
+            error: None,
+        };
+        let Some(Job::Preview { generation, .. }) = a.on_key(Key::Enter) else {
+            panic!("expected a preview")
+        };
+        assert!(a.job_pending);
+
+        a.on_key(Key::Esc);
+        assert!(
+            a.job_pending,
+            "the decode is still running -- a second job would queue behind it"
+        );
+        assert!(a.on_key(Key::Enter).is_none(), "so nothing else may start");
+
+        // The abandoned reply frees it, without reopening the screen.
+        a.on_update(Update::Preview {
+            generation,
+            result: Box::new(Ok(gif_pending())),
+        });
+        assert!(!a.job_pending, "now the worker is free");
+        assert!(matches!(a.screen, Screen::Menu), "but stays dismissed");
+    }
+
+    /// Returning to the file's own rate is not an override, so the warning
+    /// that applies to it comes back.
+    #[test]
+    fn arrowing_back_to_the_native_rate_clears_the_override() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        a.on_key(Key::Right);
+        a.on_key(Key::Left);
+
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        let Pending::Gif { rate_override, .. } = p.as_ref() else {
+            unreachable!()
+        };
+        assert_eq!(
+            *rate_override, None,
+            "back where it started means no choice was made"
+        );
     }
 }

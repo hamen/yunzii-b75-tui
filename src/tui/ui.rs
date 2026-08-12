@@ -167,13 +167,22 @@ fn confirm(f: &mut Frame, area: Rect, pending: &Pending) {
     preview_pane(f, cols[0], pending);
 
     let (name, mut lines) = match pending {
-        Pending::Picture { path, plan, .. } => (
-            path.file_name().unwrap_or_default().to_string_lossy(),
-            vec![
+        Pending::Picture { path, plan, .. } => {
+            let mut v = vec![
                 format!("160x96, {} bytes", plan.pixels.len()),
                 format!("{} reports", plan.total_reports),
-            ],
-        ),
+            ];
+            // Rendered like the GIF path rather than assumed empty: picture
+            // notes happen to duplicate the two lines above today, and a
+            // planner that grew a warning would otherwise show it in one
+            // command and swallow it in the other.
+            for n in &plan.notes {
+                if !v.iter().any(|existing| existing.contains(&n.text)) {
+                    v.push(n.text.clone());
+                }
+            }
+            (path.file_name().unwrap_or_default().to_string_lossy(), v)
+        }
         Pending::Gif {
             path,
             plan,
