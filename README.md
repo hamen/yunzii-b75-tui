@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Rust](https://img.shields.io/badge/Rust-1.85%2B-orange?logo=rust&logoColor=white)
+![Rust](https://img.shields.io/badge/Rust-1.88%2B-orange?logo=rust&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey?logo=linux&logoColor=white)
 ![Protocol](https://img.shields.io/badge/protocol-USB%20HID%20(hidraw)-blueviolet?logo=usb&logoColor=white)
 ![Checks](https://img.shields.io/badge/checks-bin%2Fci-brightgreen)
@@ -30,23 +30,21 @@ USB ID 28e9:31c8  GDMicroelectronics YUNZII B75 PRO MAX Keyboard
 
 ## 🗺️ Status
 
-**⏰ `set-time`, 🖼️ `switch-page`, 🧹 `clear-picture`, and 🎨 `set-picture`
-work!** Their protocols are fully decoded (see `PROTOCOL.md`) with native
-CLI commands, and all four are visually confirmed on real hardware.
+**⏰ `set-time`, 🖼️ `switch-page`, 🧹 `clear-picture`, 🎨 `set-picture` and
+🎞️ `set-gif` all work!** Their protocols are fully decoded (see
+`PROTOCOL.md`), with native CLI commands, and every one is visually confirmed
+on real hardware.
 
-`switch-page` still has no `gif` option, but the reason changed. Milestone 2
-thought cmd15 was broken. It is not: the vendor's GIF save has **three
-modes**, and every earlier test had used mode 0 ("set as boot animation"),
-which stores frames somewhere that never plays. Saved with mode 1 ("save to
-the device") the GIF displays and cmd15 switches to it correctly. So the
-option stays out only until GIF upload exists — switching to a page this
-tool cannot write to is not a useful command. GIF upload is decoded and is
-the next milestone; it reuses `set-picture`'s encoder unchanged.
+`switch-page` now takes `gif` too. Milestone 2 withheld it believing cmd15 did
+not switch the panel; the real cause turned out to be the *save*, not the
+switch -- the vendor's GIF save has three modes and every early test used mode
+0 ("set it as the startup animation"), which stores frames somewhere that never
+plays. `set-gif` uses mode 1, and the animation appears immediately.
 
-No `ratatui` screen yet — CLI-only, done well. Sliders and toggles aren't
-implemented; each gets its own reverse-engineering pass first, same process
-as `set-time` below. 🚧
-
+No `ratatui` screen yet -- CLI-only, done well, though there are finally enough
+commands to justify building one. Sliders and toggles (brightness, chroma,
+saturation, grayscale, "fuzzy", sharpening) aren't implemented; each gets its
+own reverse-engineering pass first, same process as `set-time` below. 🚧
 ---
 
 ## ⚡ Quick start
@@ -57,9 +55,10 @@ sudo cp udev/99-yunzii-b75.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 # unplug and replug the keyboard, then:
 ./target/release/yunzii-b75-tui set-time
-./target/release/yunzii-b75-tui switch-page home    # or: picture (gif not shipped, see Status)
+./target/release/yunzii-b75-tui switch-page home    # or: picture, gif
 ./target/release/yunzii-b75-tui clear-picture
 ./target/release/yunzii-b75-tui set-picture logo.png
+./target/release/yunzii-b75-tui set-gif mascot.gif --fps 12
 ```
 
 ### 🎨 `set-picture`
@@ -91,11 +90,40 @@ the fix is to re-run `set-picture` or run `clear-picture`.
 `clear-picture` sends 32 reports (16 repeats), with the same partial-failure
 caveat.
 
+### 🎞️ `set-gif`
+
+Takes an animated **GIF** and plays it on the panel.
+
+- Frames are stretched to 160×96 the same way `set-picture` does. GIF frame
+  position, transparency and **disposal** are applied, so optimised GIFs — the
+  normal kind — work correctly.
+- **`--fps` is literal frames per second**, 1–60. Without it, the GIF's own rate
+  is used when its frame delays are uniform, otherwise 30. The keyboard
+  animates at **one** rate for the whole animation, so a GIF with varying
+  delays cannot be reproduced exactly; the CLI says so and prints the rate it
+  used. A 2-frame GIF at 30 fps strobes — short animations want a low `--fps`.
+- **160 frames maximum.** A longer GIF is an error, not a silent truncation.
+  `--max-frames N` opts into uploading an evenly sampled subset, and the CLI
+  warns that fewer frames at the same rate play faster, suggesting the `--fps`
+  that keeps the original duration.
+- **Uploading takes roughly a second per frame** — the device pauses three
+  seconds every sixteenth frame, which looks like a flash write. The CLI prints
+  an estimate up front and a line per frame, so it is visibly working.
+- If an upload fails part-way the animation may be incomplete; re-run
+  `set-gif`. Note `clear-picture` is *not* known to clear a GIF, and there is
+  no `clear-gif` command yet.
+
+Unlike `set-picture`, this does **not** reproduce the vendor's pixel output
+byte-for-byte, and `PROTOCOL.md` explains why: the vendor resamples each frame
+through a browser canvas, which cannot be reproduced outside a browser. The
+transport is byte-identical; the pixels are ours. For pixel art the result is
+usually sharper than the vendor's.
+
 The udev rule grants access to **all** of the keyboard's `hidraw`
 interfaces for this VID/PID (there's no finer-grained udev match available),
 not just the one this tool actually uses.
 
-Requires: [Rust](https://rustup.rs) 🦀 (for `bin/ci`'s `cargo` steps too),
+Requires: [Rust](https://rustup.rs) 🦀 **1.88+** (for `bin/ci`'s `cargo` steps too),
 the keyboard connected via USB-C (2.4G dongle / Bluetooth untested), and the
 vendor's browser tab (if any) closed — WebHID and this tool can't hold the
 device open at the same time.

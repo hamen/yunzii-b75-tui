@@ -365,6 +365,83 @@
         "note": "[magic, cmd=12, 0x78, 0x00, innerCrc16(0x0C,0x78,0x00)]. `120,0` is 30720 -- the total pixel-stream length -- encoded [hi,lo], the opposite order from the LE offset in bytes 1-2 of the same report. Constant only because the panel is a fixed 160x96; a device with a different panel would send a different value here."
       },
       "note": "Declares how many bytes of pixel data will follow. Sent as a data packet (0x41), not an info package (0x40) -- the only command so far whose leading report is a 0x41."
+    },
+    "cmd18_gifSession": {
+      "dataPacketPayload": {
+        "prefix": [
+          165,
+          90,
+          18,
+          0,
+          2,
+          4,
+          80
+        ],
+        "trailer": [
+          "mode",
+          "frameCountOnClose"
+        ],
+        "encoding": "prefix + 2 variable bytes",
+        "note": "GIF session OPEN and CLOSE -- NOT a \"clear GIF\" command, which is how Milestone 2 filed it. Nine bytes: the fixed prefix [magic, cmd=18, 0x00, len=2, innerCrc16(0x12,0x00,0x02)] followed by two parameters. Byte 7 is the save MODE; byte 8 is 0 on open and the FRAME COUNT on close. The inner CRC covers only [18,0,2] -- the two trailing bytes sit after it and are NOT inputs to it, they are covered by the outer checksum like any other payload byte. OPCODE QUIRK: the opening cmd18 is sent as an info package (0x40) while the closing one is a data packet (0x41); Milestone 2's \"Clear GIF\" capture sent both as 0x40, so those samples are a different sequence and not a cross-check for these."
+      },
+      "note": "Resolved Milestone 4 (2026-08-11) from a real mode-1 save of a 2-frame GIF."
+    },
+    "cmd19_gifSessionRate": {
+      "dataPacketPayload": {
+        "prefix": [
+          165,
+          90,
+          19,
+          0,
+          2,
+          196,
+          1
+        ],
+        "trailer": [
+          "mode",
+          "fpsOnClose"
+        ],
+        "encoding": "prefix + 2 variable bytes",
+        "note": "The second half of the GIF session pair. Same shape as cmd18; byte 8 is 0 on open and the FRAME RATE on close (the vendor's slider is 1-60, default 30, so a 30 fps save closes with 0x1e). Sent as a data packet (0x41) both times."
+      },
+      "note": "Resolved Milestone 4 (2026-08-11)."
+    },
+    "cmd16_gifFrameHeader": {
+      "dataPacketPayload": {
+        "prefix": [
+          165,
+          90,
+          16,
+          0,
+          3,
+          4,
+          48,
+          2
+        ],
+        "trailer": [
+          "mode",
+          "frameIndex"
+        ],
+        "encoding": "prefix + 2 variable bytes",
+        "note": "Same inner command number as picture upload's start (cmd 16) but a different command: len=3 with a three-byte trailer, sent as a data packet (0x41) rather than an info package (0x40), and repeated once per frame with a 0-based frame index in the last byte."
+      },
+      "note": "Resolved Milestone 4 (2026-08-11)."
+    },
+    "cmd17_gifDeclareSize": {
+      "dataPacketPayload": {
+        "value": [
+          165,
+          90,
+          17,
+          120,
+          0,
+          197,
+          3
+        ],
+        "encoding": "constant",
+        "note": "Declares one FRAME's byte count, sent once per frame straight after cmd16. `120,0` is 30720 as [hi,lo], the same encoding cmd12 uses for the whole picture."
+      },
+      "note": "Resolved Milestone 4 (2026-08-11)."
     }
   },
   "transactionStructure": {
@@ -404,6 +481,31 @@
         "alpha": "The vendor's PICTURE encoder reads only bytes 0-2 of each RGBA quad and never looks at alpha: `function te(J){const ae=J.data; ... const xe=ae[he],ve=ae[he+1],re=ae[he+2]; ...}`. Its source is a getImageData() off a FRESH canvas -- no black fill -- and drawing source-over onto a transparent backdrop preserves the un-premultiplied colour. So a semi-transparent pixel contributes its FULL RGB, and only a fully transparent pixel comes back as (0,0,0,0), i.e. black. This is NOT premultiplication (`out = src*a`), which a cross-review reading of the plan's prose suggested; the `if (data[i+3] === 0)` black pre-pass that does exist belongs to the vendor's GIF path, not this one."
       },
       "resolvedBy": "Milestone 3, live HID capture of the vendor tool + source read, 2026-08-11."
+    },
+    "gifUpload": {
+      "commands": [
+        "cmd18_gifSession",
+        "cmd19_gifSessionRate",
+        "cmd16_gifFrameHeader",
+        "cmd17_gifDeclareSize"
+      ],
+      "shape": "1149 reports for a 2-frame GIF: infoPackage(0x40 cmd18) + dataPacket(0x41 cmd19) to open the session, then per frame [dataPacket(0x41 cmd16 frame header) -> dataPacket(0x41 cmd17 declare 30720) -> 30 blocks x 19 bulk packets], then dataPacket(0x41 cmd18 frame count) + dataPacket(0x41 cmd19 fps) to close, then finish(0x42). Count = 2 + frames*(2 + 30*19) + 2 + 1.",
+      "blockChunking": {
+        "blockBytes": 1024,
+        "packetsPerBlock": 19,
+        "blocksPerFrame": 30,
+        "note": "THE KEY DIFFERENCE FROM PICTURE UPLOAD. A frame's 30720 bytes are pushed one 1024-byte block at a time, and each block is chunked independently, so the offset in bytes 1-2 RESTARTS AT 0 for every block and never reaches 1024. 1024 = 18*56 + 16, so a block is 19 packets whose last declares 16 bytes. Picture upload instead runs a single continuous offset 0..30688 across the whole frame. Milestone 3's prose said GIF 'reuses the same 56-byte bulk packets', which is true of the packet FORMAT and misleading about the chunker -- do not unify them."
+      },
+      "modes": {
+        "0": "Set it as the startup animation. Max 64 frames, 160x96. Stores frames somewhere that never plays -- not on the GIF page, and not at power-up (tested by replugging). This is what misled Milestone 2 into believing cmd15 was broken. NOT implemented.",
+        "1": "Save to the device. Max 160 frames, 160x96. The mode that actually displays. THIS IS WHAT WE SHIP.",
+        "2": "Save GIF to the device home page. Max 42 frames, 96x64 (12288 bytes). The vendor renders this button only for productId 12463; this keyboard is 12744. Nothing on the wire enforces that, but it is a different frame size for a device we do not have. NOT implemented, NOT tested."
+      },
+      "frameRate": "One rate for the whole animation, sent once as the last byte of the closing cmd19. The vendor's slider is 1-60, default 30. A GIF with variable per-frame delays therefore cannot be reproduced exactly.",
+      "hostSleeps": "30 ms after the two open reports; 3000 ms after each frame's cmd16 when frameIndex % 16 == 0 (0-based, so frame 0 too) else 30 ms; nothing between cmd17 and the first block; 30 ms after EVERY 1024-byte block including the last; nothing between frames; 30 ms after each close report; and 500 ms before finish. The 3000 ms is almost certainly a flash-write pause.",
+      "pixelFormat": "Identical to picture upload: 160x96 RGB565, big-endian per pixel, 30720 bytes per frame.",
+      "honestLimit": "Unlike picture upload, this repo does NOT reproduce the vendor's pixel bytes. The vendor runs each GIF frame through a three-stage browser-canvas downscale with smoothing plus an edge filter, onto a black-filled canvas; browser resampling is implementation-defined and not reproducible outside a browser. This repo uses the same nearest-neighbour path as set-picture, so set-gif and set-picture agree with each other. What IS verified byte-for-byte against the capture: framing, ordering, block boundaries, per-block offsets, length bytes and every checksum -- see fixtures/gif-upload.json, which is a labelled hybrid.",
+      "resolvedBy": "Milestone 4, live capture of a mode-1 save + vendor source read, 2026-08-11."
     }
   },
   "rawEventCounts": {
@@ -477,16 +579,8 @@
   },
   "unresolved": [
     {
-      "item": "RESOLVED (2026-08-11): why \"switch to the GIF page\" (cmd15) appeared not to switch the TFT",
-      "tried": "Milestone 2 concluded that cmd15 was correct but that something else was needed to make the GIF page display. That was right about cmd15 and wrong about the cause. Reading the vendor bundle showed the GIF save button is not one action but THREE modes, and the byte Milestone 2 recorded as a fixed 0x00 in cmd18/cmd19 is the mode: 0 = 'set as boot animation' (max 64 frames), 1 = 'save to the device' (max 160 frames), 2 = 'save GIF to the device home page' (max 42 frames, 96x64), where mode 2's button only renders for productId 12463 and is hidden for this keyboard's 12744. Every earlier attempt had used mode 0, which stores the frames somewhere that never plays -- not on the GIF page, and not at power-up either (tested: after a replug the panel shows the home screen). Saving the same GIF with mode 1 makes it play on the TFT immediately. So cmd15 was never the problem; there was simply nothing on the GIF page to show. `switch-page gif` is still not exposed by the CLI, now only because GIF upload itself is not implemented yet -- that is a milestone, not a mystery."
-    },
-    {
       "item": "finish (0x42) length byte numeric meaning (why 0x38/56, not e.g. 0x00)",
       "tried": "confirmed as a stable constant across 3 live captures and the vendor source (`finishScreenControlDataPacket()` called with no arguments every time); the checksum formula using this constant is verified exactly. Only the semantic reason for the value 56 itself is unknown -- it does not block using this command."
-    },
-    {
-      "item": "cmd 18 and 19 -- previously filed as \"Clear GIF\" with two unexplained trailing bytes",
-      "tried": "Largely resolved 2026-08-11 by capturing a real GIF save and reading the vendor source. cmd18/cmd19 are not a clear command: they are GIF session OPEN and CLOSE, and the trailing bytes are parameters, not padding. Vendor source: open sends [165,90,18,0,2,crc,crc,mode,0] and [165,90,19,0,2,crc,crc,mode,0]; close sends the same two with the last byte carrying the FRAME COUNT for cmd18 and the FPS for cmd19. A captured 2-frame save at 30 fps closes with frame count 0x02 and 0x1e (=30) in exactly those positions. The 'Clear GIF' flavour Milestone 2 captured is the same pair with mode byte 1. Between open and close the vendor sends, per frame, cmd16 with a frame index followed by cmd17 declaring 30720 bytes and then the same 56-byte bulk packets this milestone implements. NOT shipped here: GIF upload is its own milestone, and this entry stays open until it is implemented and verified on hardware rather than only decoded."
     },
     {
       "item": "2.4G dongle and Bluetooth connection modes -- whether the config interface is present/functional over either",
@@ -495,6 +589,14 @@
     {
       "item": "device connect/init traffic before the first command",
       "tried": "not captured -- the hook was installed after the device was already connected and open (a prior WebHID permission grant was already in place from an earlier session). The vendor's click-handler source (scripts/vendor-source-excerpt.js) shows no reference to connection-time state, which is a weak signal there's no required init handshake, but this is not independently confirmed by capturing a fresh connect sequence."
+    },
+    {
+      "item": "GIF save modes 0 and 2 -- decoded but never exercised",
+      "tried": "Mode 0 ('set it as the startup animation', max 64 frames) was used by every GIF test before Milestone 3 and never displayed anything: not on the GIF page, and not at power-up either (tested by unplugging and replugging the keyboard, which comes back to the home screen). Where it stores the frames, and what would ever play them, is unknown. Mode 2 ('save GIF to the device home page', max 42 frames, 96x64) has a different frame size and its button renders only for productId 12463; this keyboard is 12744, so it was never clicked and never captured. Nothing on the wire prevents sending either mode -- the gate is in the vendor's UI, not the protocol -- but neither is implemented or tested here, and mode 2 in particular would need a 12288-byte frame this repo does not build."
+    },
+    {
+      "item": "whether clear-picture also clears a stored GIF",
+      "tried": "Still untested. Milestone 4 deliberately does NOT tell users to run clear-picture after a failed GIF upload for this reason, and there is no clear-gif command; the advice is to re-run set-gif."
     }
   ],
   "fixtureSchemaNote": "Every report in fixtures/*.json carries these required keys: transaction_id, command_index, fragment_index, direction, hid_method, report_id, payload_hex. fragment_index is always 0 for every report in this phase's fixtures -- discovery found opcodes 0x40/0x41/0x42 are independently complete report types, not fragments requiring reassembly (see $schema_note above), so the field exists per the fixture schema but carries no ordering information here."

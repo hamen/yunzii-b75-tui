@@ -89,11 +89,20 @@ for (const file of fixtureFiles) {
     else okDetail(`${label}: checksum16le matches (${actual})`);
 
     // 5. offset/reserved bytes 1-2, status byte, padding beyond length
-    if ('offset' in report) {
-      // A bulk data packet: bytes 1-2 are the LE offset into the pixel stream.
+    //
+    // Two kinds of bulk packet carry an offset in bytes 1-2:
+    //   picture upload  -> `offset`, continuous 0..30688 across the frame
+    //   GIF upload      -> `block_offset`, restarting at 0 every 1024 bytes
+    // They are named differently in the fixtures on purpose, so that reading
+    // one cannot be mistaken for the other.
+    const offsetKey = 'offset' in report ? 'offset' : ('block_offset' in report ? 'block_offset' : null);
+    if (offsetKey) {
       const wireOffset = bytes[1] | (bytes[2] << 8);
-      if (wireOffset !== report.offset) fail(`${label}: offset bytes decode to ${wireOffset}, fixture says ${report.offset}`);
-      else okDetail(`${label}: offset bytes match (${wireOffset})`);
+      if (wireOffset !== report[offsetKey]) fail(`${label}: offset bytes decode to ${wireOffset}, fixture says ${report[offsetKey]}`);
+      else okDetail(`${label}: ${offsetKey} bytes match (${wireOffset})`);
+      if (offsetKey === 'block_offset' && wireOffset >= 1024) {
+        fail(`${label}: a GIF block offset must stay below the 1024-byte block size, got ${wireOffset}`);
+      }
       if ('data_length' in report && length !== report.data_length) {
         fail(`${label}: length byte is 0x${length.toString(16)} but fixture says data_length ${report.data_length}`);
       }
@@ -124,6 +133,49 @@ for (const file of fixtureFiles) {
         fail(`${label}: info-package payload ${JSON.stringify(payload)} != declared constant ${JSON.stringify(known)}`);
       } else if (known) {
         okDetail(`${label}: info-package payload matches declared constant`);
+      }
+    }
+
+    // 5d. Milestone 4's GIF commands are 0x41 data packets whose payloads end
+    //     in VARIABLE bytes (mode, frame index, frame count, frame rate), so
+    //     unlike every command above them they cannot be compared against a
+    //     single constant. Check the fixed prefix, and sanity-check the
+    //     parameters that have a knowable range.
+    if (opcodeHex === '0x41' && payload[0] === 165 && payload[1] === 90) {
+      const gifCommands = {
+        18: fields.commands.cmd18_gifSession,
+        19: fields.commands.cmd19_gifSessionRate,
+      };
+      const gifCmd = gifCommands[payload[2]];
+      if (gifCmd) {
+        const prefix = gifCmd.dataPacketPayload.prefix;
+        if (JSON.stringify(payload.slice(0, prefix.length)) !== JSON.stringify(prefix)) {
+          fail(`${label}: GIF session prefix ${JSON.stringify(payload.slice(0, prefix.length))} != declared ${JSON.stringify(prefix)}`);
+        } else {
+          okDetail(`${label}: GIF session prefix matches; trailer [${payload.slice(prefix.length)}]`);
+        }
+        if (payload.length !== prefix.length + 2) fail(`${label}: expected a 2-byte trailer, payload is ${payload.length} bytes`);
+        if (payload[7] !== 1) fail(`${label}: only mode 1 ("save to the device") is shipped, got mode ${payload[7]}`);
+      }
+      if (payload[2] === 16 && length === 10) {
+        const prefix = fields.commands.cmd16_gifFrameHeader.dataPacketPayload.prefix;
+        if (JSON.stringify(payload.slice(0, prefix.length)) !== JSON.stringify(prefix)) {
+          fail(`${label}: GIF frame-header prefix ${JSON.stringify(payload.slice(0, prefix.length))} != declared ${JSON.stringify(prefix)}`);
+        } else {
+          okDetail(`${label}: GIF frame-header prefix matches; mode ${payload[8]}, frame ${payload[9]}`);
+        }
+        if ('frame_index' in report && payload[9] !== report.frame_index) {
+          fail(`${label}: wire frame index ${payload[9]} != fixture's ${report.frame_index}`);
+        }
+        if (payload[8] !== 1) fail(`${label}: only mode 1 ("save to the device") is shipped, got mode ${payload[8]}`);
+      }
+      if (payload[2] === 17) {
+        const known = fields.commands.cmd17_gifDeclareSize.dataPacketPayload.value;
+        if (JSON.stringify(payload) !== JSON.stringify(known)) {
+          fail(`${label}: cmd17 payload ${JSON.stringify(payload)} != declared constant ${JSON.stringify(known)}`);
+        } else {
+          okDetail(`${label}: cmd17 declare-size matches declared constant`);
+        }
       }
     }
 

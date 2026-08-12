@@ -196,3 +196,64 @@ assertEqual('lengths: 548 full 56-byte chunks', bulk.filter((r) => r[3] === 0x38
 assertEqual('lengths: the last chunk declares 32, NOT a padded 56', bulk[bulk.length - 1][3], 0x20);
 
 console.log('\nAll checks passed.');
+
+// --- Milestone 4: GIF upload (2026-08-11) ---
+//
+// Kept clearly apart from the "Clear GIF" cmd18/cmd19 samples above. Those are
+// the SAME command numbers with different parameters and a different opcode
+// (both 0x40 there; here the opening cmd18 is 0x40 and everything else 0x41).
+// Milestone 2 mistook this command pair for a clear operation; mixing the two
+// sample sets would re-muddle exactly that.
+
+const GIF_MODE = 1;
+const gifSession = (cmd, crc, mode, last) => [165, 90, cmd, 0, 2, crc[0], crc[1], mode, last];
+
+// The inner CRC covers only [cmd, 0, len]. The mode/count/fps trailer sits
+// AFTER it and is not an input -- folding it in would be a plausible mistake.
+assertEqual('vendor inner CRC ga([18,0,2])', ga([18, 0, 2]), [4, 80]);
+assertEqual('vendor inner CRC ga([19,0,2])', ga([19, 0, 2]), [196, 1]);
+assertEqual('vendor inner CRC ga([16,0,3]) (GIF frame header)', ga([16, 0, 3]), [4, 48]);
+assertEqual('vendor inner CRC ga([17,120,0]) (GIF declare size)', ga([17, 120, 0]), [197, 3]);
+
+// Real values from fixtures/raw/cap-gif-upload-hidlog.json (mode 1, 2 frames, 30 fps).
+assertEqual('cmd18 session OPEN  (opcode 0x40, len 9)',
+  outerChecksum16(0x40, 9, gifSession(18, [4, 80], GIF_MODE, 0)), [0xb1, 0x01]);
+assertEqual('cmd19 session OPEN  (opcode 0x41, len 9)',
+  outerChecksum16(0x41, 9, gifSession(19, [196, 1], GIF_MODE, 0)), [0x24, 0x02]);
+assertEqual('cmd18 session CLOSE carrying frame count 2',
+  outerChecksum16(0x41, 9, gifSession(18, [4, 80], GIF_MODE, 2)), [0xb4, 0x01]);
+assertEqual('cmd19 session CLOSE carrying 30 fps (0x1e)',
+  outerChecksum16(0x41, 9, gifSession(19, [196, 1], GIF_MODE, 30)), [0x42, 0x02]);
+assertEqual('cmd16 GIF frame header, frame 0 (opcode 0x41, len 10)',
+  outerChecksum16(0x41, 10, [165, 90, 16, 0, 3, 4, 48, 2, GIF_MODE, 0]), [0x94, 0x01]);
+assertEqual('cmd17 GIF declare size (opcode 0x41, len 7)',
+  outerChecksum16(0x41, 7, [165, 90, 17, 120, 0, 197, 3]), [0x98, 0x02]);
+
+// Changing the frame rate moves ONE payload byte -- and the checksum with it,
+// because the payload is summed. (An earlier plan draft said "exactly one
+// byte", which is wrong about the wire.)
+const at30 = outerChecksum16(0x41, 9, gifSession(19, [196, 1], GIF_MODE, 30));
+const at12 = outerChecksum16(0x41, 9, gifSession(19, [196, 1], GIF_MODE, 12));
+assertEqual('a different fps shifts the checksum by the byte difference', at12[0], at30[0] - 18);
+
+// Whole-capture sweep, same as the picture one: one formula, every report.
+const gifRawPath = pathMod.join(__dirname, '..', 'fixtures', 'raw', 'cap-gif-upload-hidlog.json');
+const gifRaw = JSON.parse(fs.readFileSync(gifRawPath, 'utf8'));
+const gifReports = gifRaw.entries.map((e) => e.hex.trim().split(/\s+/).map((b) => parseInt(b, 16)));
+let gifOk = 0;
+for (const r of gifReports) {
+  const payload = r.slice(7, 7 + r[3]);
+  const [lo, hi] = outerChecksum16(r[0], r[3], payload, r[1], r[2]);
+  if (lo === r[4] && hi === r[5]) gifOk++;
+}
+assertEqual('every captured GIF report matches the unified model', gifOk, gifReports.length);
+
+// Block structure, checked from the bytes rather than asserted in prose.
+const gifBulk = gifReports.filter((r) => r[0] === 0x41 && !(r[7] === 165 && r[8] === 90));
+const gifOffsets = gifBulk.map((r) => r[1] | (r[2] << 8));
+assertEqual('GIF bulk packet count (2 frames x 30 blocks x 19)', gifBulk.length, 1140);
+assertEqual('GIF offsets never reach the 1024-byte block size', Math.max(...gifOffsets) < 1024, true);
+assertEqual('GIF offsets restart at 0 once per block (60 blocks)', gifOffsets.filter((o) => o === 0).length, 60);
+assertEqual('GIF bulk bytes total two full frames', gifBulk.reduce((a, r) => a + r[3], 0), 2 * 160 * 96 * 2);
+
+console.log('\nAll GIF checks passed.');
