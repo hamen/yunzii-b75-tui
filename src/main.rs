@@ -1,3 +1,4 @@
+mod adjust;
 mod device;
 mod exec;
 mod plan;
@@ -5,6 +6,7 @@ mod protocol;
 mod time;
 mod tui;
 
+use adjust::Adjustments;
 use clap::{Parser, Subcommand, ValueEnum};
 use device::{Device, DeviceError, ReportIdForm};
 use plan::{MediaError, Note, Stream};
@@ -146,6 +148,26 @@ enum Commands {
     SetPicture {
         /// Path to a PNG or JPEG file.
         path: PathBuf,
+        /// Brightness, -1.0 to 1.0. 0 leaves it alone.
+        #[arg(long, value_parser = parse_unit, allow_negative_numbers = true)]
+        brightness: Option<f64>,
+        /// Chroma, -1.0 to 1.0. Positive warms the image, negative cools it.
+        #[arg(long, value_parser = parse_unit, allow_negative_numbers = true)]
+        chroma: Option<f64>,
+        /// Saturation, -1.0 to 1.0.
+        #[arg(long, value_parser = parse_unit, allow_negative_numbers = true)]
+        saturation: Option<f64>,
+        /// Convert to grey, averaging the three channels.
+        #[arg(long)]
+        grayscale: bool,
+        /// Sharpen with the vendor's 3x3 kernel.
+        #[arg(long)]
+        sharpen: bool,
+        /// Soften. NOT the vendor's blur, which is not reproducible -- see
+        /// README.
+        #[arg(long)]
+        blur: bool,
+
         /// Decode and report what would be sent, then stop without contacting
         /// the keyboard.
         #[arg(long)]
@@ -163,6 +185,26 @@ enum Commands {
     SetGif {
         /// Path to a GIF file.
         path: PathBuf,
+        /// Brightness, -1.0 to 1.0. 0 leaves it alone.
+        #[arg(long, value_parser = parse_unit, allow_negative_numbers = true)]
+        brightness: Option<f64>,
+        /// Chroma, -1.0 to 1.0. Positive warms the image, negative cools it.
+        #[arg(long, value_parser = parse_unit, allow_negative_numbers = true)]
+        chroma: Option<f64>,
+        /// Saturation, -1.0 to 1.0.
+        #[arg(long, value_parser = parse_unit, allow_negative_numbers = true)]
+        saturation: Option<f64>,
+        /// Convert to grey, averaging the three channels.
+        #[arg(long)]
+        grayscale: bool,
+        /// Sharpen with the vendor's 3x3 kernel.
+        #[arg(long)]
+        sharpen: bool,
+        /// Soften. NOT the vendor's blur, which is not reproducible -- see
+        /// README.
+        #[arg(long)]
+        blur: bool,
+
         /// Frames per second, 1-60. Without it, the GIF's own rate is used
         /// when its frame delays are uniform AND inside 1-60. Otherwise the
         /// upload falls back to 30 fps and prints why: the delays vary, they
@@ -197,6 +239,18 @@ fn parse_fps(s: &str) -> Result<u8, String> {
             protocol::GIF_FPS_MIN,
             protocol::GIF_FPS_MAX
         ));
+    }
+    Ok(v)
+}
+
+/// Rejects an adjustment outside the vendor's -1..1 range, at parse time.
+///
+/// A usage error rather than a silent clamp: someone who typed 1.5 meant
+/// something, and quietly turning it into 1.0 hides that the tool disagreed.
+fn parse_unit(s: &str) -> Result<f64, String> {
+    let v: f64 = s.parse().map_err(|_| format!("`{s}` is not a number"))?;
+    if !v.is_finite() || !(-1.0..=1.0).contains(&v) {
+        return Err("must be between -1.0 and 1.0".into());
     }
     Ok(v)
 }
@@ -247,13 +301,52 @@ fn main() {
         Commands::SetTime { debug_no_prefix } => run_set_time(debug_no_prefix).map_err(Into::into),
         Commands::SwitchPage { page } => run_switch_page(page.into()).map_err(Into::into),
         Commands::ClearPicture => run_clear_picture().map_err(Into::into),
-        Commands::SetPicture { path, dry_run } => run_set_picture(&path, dry_run),
+        Commands::SetPicture {
+            path,
+            dry_run,
+            brightness,
+            chroma,
+            saturation,
+            grayscale,
+            sharpen,
+            blur,
+        } => run_set_picture(
+            &path,
+            dry_run,
+            &Adjustments {
+                brightness: brightness.unwrap_or(0.0),
+                chroma: chroma.unwrap_or(0.0),
+                saturation: saturation.unwrap_or(0.0),
+                grayscale,
+                sharpen,
+                blur,
+            },
+        ),
         Commands::SetGif {
             path,
             fps,
             max_frames,
             dry_run,
-        } => run_set_gif(&path, fps, max_frames, dry_run),
+            brightness,
+            chroma,
+            saturation,
+            grayscale,
+            sharpen,
+            blur,
+        } => run_set_gif(
+            &path,
+            fps,
+            max_frames,
+            dry_run,
+            &Adjustments {
+                brightness: brightness.unwrap_or(0.0),
+                chroma: chroma.unwrap_or(0.0),
+                saturation: saturation.unwrap_or(0.0),
+                grayscale,
+                sharpen,
+                blur,
+            },
+        ),
     };
 
     if let Err(e) = result {
@@ -398,12 +491,16 @@ fn run_set_gif(
     fps: Option<u8>,
     max_frames: Option<NonZeroUsize>,
     dry_run: bool,
+    adjustments: &Adjustments,
 ) -> Result<(), AppError> {
     // Decode, composite and encode before touching the device: this can take a
     // while for a long GIF, and discovering a bad file after 500 writes would
     // leave a half-written animation on the panel for no reason.
     println!("reading {}...", path.display());
-    let plan = plan::plan_gif_upload(path, fps, max_frames)?;
+    if let Some(s) = adjustments.summary() {
+        println!("adjustments: {s}");
+    }
+    let plan = plan::plan_gif_upload(path, fps, max_frames, adjustments)?;
     print_notes(&plan.notes);
 
     // The plan is self-consistent before anything is sent. Same reasoning as
@@ -450,11 +547,14 @@ fn run_set_gif(
     Ok(())
 }
 
-fn run_set_picture(path: &Path, dry_run: bool) -> Result<(), AppError> {
+fn run_set_picture(path: &Path, dry_run: bool, adjustments: &Adjustments) -> Result<(), AppError> {
     // Decode FIRST, before opening the device: a missing or corrupt file
     // should say so, not fail with "device not found" on a machine with no
     // keyboard plugged in.
-    let plan = plan::plan_picture_upload(path)?;
+    let plan = plan::plan_picture_upload(path, adjustments)?;
+    if let Some(s) = adjustments.summary() {
+        println!("adjustments: {s}");
+    }
     print_notes(&plan.notes);
 
     if dry_run {
@@ -544,8 +644,13 @@ mod cli_tests {
     /// summary to stdout, and nothing is lost between planner and writer.
     #[test]
     fn a_real_plans_notes_split_across_the_two_streams() {
-        let plan = plan::plan_gif_upload(Path::new("fixtures/test-anim-too-fast.gif"), None, None)
-            .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-too-fast.gif"),
+            None,
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
 
         let mut out = Vec::new();
         let mut err = Vec::new();
@@ -575,9 +680,13 @@ mod cli_tests {
     fn a_cancelled_gif_upload_tells_the_user_the_animation_is_partial() {
         use std::sync::atomic::AtomicBool;
 
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
-                .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let cancel = AtomicBool::new(false);
         let rec = exec::Recorder::cancelling_after(20, &cancel);
         let clock_and_dev = &rec;
@@ -668,7 +777,7 @@ mod cli_tests {
     #[test]
     fn parses_set_picture_with_a_path() {
         let cli = Cli::try_parse_from(["yunzii-b75-tui", "set-picture", "logo.png"]).unwrap();
-        let Commands::SetPicture { path, dry_run: _ } = cli.command.unwrap() else {
+        let Commands::SetPicture { path, .. } = cli.command.unwrap() else {
             panic!("expected SetPicture");
         };
         assert_eq!(path, PathBuf::from("logo.png"));
@@ -773,6 +882,7 @@ mod cli_tests {
             fps,
             max_frames,
             dry_run,
+            ..
         } = cli.command.unwrap()
         else {
             panic!("expected SetGif");

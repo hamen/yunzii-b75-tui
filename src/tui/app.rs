@@ -6,7 +6,8 @@
 //! quitting mid-upload -- ordinary unit tests rather than something only a
 //! person with a keyboard plugged in can check.
 
-use crate::plan::{GifPlan, PicturePlan};
+use crate::adjust::Adjustments;
+use crate::plan::{self, GifPlan, PicturePlan};
 use crate::protocol::Page;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -124,6 +125,9 @@ pub enum Pending {
     Picture {
         path: PathBuf,
         plan: PicturePlan,
+        adjustments: Adjustments,
+        /// Which row of the confirm list is selected.
+        row: usize,
     },
     Gif {
         path: PathBuf,
@@ -131,10 +135,123 @@ pub enum Pending {
         /// `None` means "as the file asks"; `Some` is the equivalent of
         /// passing `--fps`, and suppresses the fallback note the same way.
         rate_override: Option<u8>,
+        adjustments: Adjustments,
+        row: usize,
     },
 }
 
+/// One line of the confirm screen.
+///
+/// The rate is a row like any other, which is what lets the arrow keys keep
+/// meaning what they meant before adjustments existed: `Rate` is row 0, so
+/// left and right still change the frame rate until you move off it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Row {
+    Rate,
+    Brightness,
+    Chroma,
+    Saturation,
+    Grayscale,
+    Sharpen,
+    Blur,
+}
+
+impl Row {
+    pub const GIF: [Row; 7] = [
+        Row::Rate,
+        Row::Brightness,
+        Row::Chroma,
+        Row::Saturation,
+        Row::Grayscale,
+        Row::Sharpen,
+        Row::Blur,
+    ];
+    /// A picture has no frame rate.
+    pub const PICTURE: [Row; 6] = [
+        Row::Brightness,
+        Row::Chroma,
+        Row::Saturation,
+        Row::Grayscale,
+        Row::Sharpen,
+        Row::Blur,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Row::Rate => "Rate",
+            Row::Brightness => "Brightness",
+            Row::Chroma => "Chroma",
+            Row::Saturation => "Saturation",
+            Row::Grayscale => "Grayscale",
+            Row::Sharpen => "Sharpen",
+            Row::Blur => "Blur",
+        }
+    }
+}
+
+/// How far one arrow press moves a slider. The vendor's step.
+const ADJUST_STEP: f64 = 0.05;
+
 impl Pending {
+    pub fn rows(&self) -> &'static [Row] {
+        match self {
+            Pending::Picture { .. } => &Row::PICTURE,
+            Pending::Gif { .. } => &Row::GIF,
+        }
+    }
+
+    pub fn row(&self) -> usize {
+        match self {
+            Pending::Picture { row, .. } | Pending::Gif { row, .. } => *row,
+        }
+    }
+
+    pub fn adjustments(&self) -> &Adjustments {
+        match self {
+            Pending::Picture { adjustments, .. } | Pending::Gif { adjustments, .. } => adjustments,
+        }
+    }
+
+    /// Re-encodes every frame from the pristine panel pixels.
+    ///
+    /// Always from the originals, never on top of the last result, so moving a
+    /// slider back and forth returns exactly where it started instead of
+    /// accumulating rounding.
+    pub fn reencode_all(&mut self) {
+        match self {
+            Pending::Picture {
+                plan, adjustments, ..
+            } => {
+                plan.pixels = plan::adjust_and_encode(&plan.panel_rgba, adjustments);
+            }
+            Pending::Gif {
+                plan, adjustments, ..
+            } => {
+                for (out, src) in plan.frames.iter_mut().zip(plan.panel_rgba.iter()) {
+                    *out = plan::adjust_and_encode(src, adjustments);
+                }
+            }
+        }
+    }
+
+    /// Re-encodes only the frame the preview shows.
+    ///
+    /// What a keypress runs: 15,360 pixels through at most six filters, which
+    /// is fast enough on the drawing thread. The whole set is only recomputed
+    /// when the upload starts, on the worker.
+    pub fn reencode_preview(&mut self) {
+        match self {
+            Pending::Picture { .. } => self.reencode_all(),
+            Pending::Gif {
+                plan, adjustments, ..
+            } => {
+                if let (Some(out), Some(src)) = (plan.frames.first_mut(), plan.panel_rgba.first()) {
+                    *out = plan::adjust_and_encode(src, adjustments);
+                }
+            }
+        }
+    }
+
     /// The panel frame this will send, for the preview to draw.
     ///
     /// Kept as pixels rather than a pre-rendered `Preview`: the pane knows how
@@ -514,27 +631,55 @@ impl App {
                 self.note("discarded");
                 None
             }
+            Key::Up | Key::Down => {
+                let Screen::Confirm(p) = &mut self.screen else {
+                    return None;
+                };
+                let last = p.rows().len() - 1;
+                let cur = p.row();
+                let next = if key == Key::Up {
+                    cur.saturating_sub(1)
+                } else {
+                    (cur + 1).min(last)
+                };
+                match p.as_mut() {
+                    Pending::Picture { row, .. } | Pending::Gif { row, .. } => *row = next,
+                }
+                None
+            }
             Key::Left | Key::Right => {
                 let Screen::Confirm(p) = &mut self.screen else {
                     return None;
                 };
-                if let Pending::Gif {
-                    plan,
-                    rate_override,
-                    ..
-                } = p.as_mut()
-                {
-                    let current = rate_override.unwrap_or(plan.rate);
-                    let next = if key == Key::Left {
-                        current.saturating_sub(1).max(crate::protocol::GIF_FPS_MIN)
-                    } else {
-                        (current + 1).min(crate::protocol::GIF_FPS_MAX)
-                    };
-                    // Arrowing back to the file's own rate is not a choice to
-                    // override it, so the fallback note applies again. Leaving
-                    // it as Some(native) would suppress a warning that is true.
-                    *rate_override = (next != plan.rate).then_some(next);
+                let up = key == Key::Right;
+                let row = p.rows()[p.row()];
+                let changed = adjust_row(p.as_mut(), row, up);
+                if changed {
+                    p.reencode_preview();
                 }
+                None
+            }
+            Key::Char(' ') => {
+                let Screen::Confirm(p) = &mut self.screen else {
+                    return None;
+                };
+                let row = p.rows()[p.row()];
+                if toggle_row(p.as_mut(), row) {
+                    p.reencode_preview();
+                }
+                None
+            }
+            Key::Char('0') => {
+                let Screen::Confirm(p) = &mut self.screen else {
+                    return None;
+                };
+                match p.as_mut() {
+                    Pending::Picture { adjustments, .. } | Pending::Gif { adjustments, .. } => {
+                        *adjustments = Adjustments::NONE;
+                    }
+                }
+                p.reencode_preview();
+                self.note("adjustments reset");
                 None
             }
             Key::Enter => {
@@ -542,9 +687,13 @@ impl App {
                     self.note("no keyboard: cannot upload");
                     return None;
                 }
-                let Screen::Confirm(p) = std::mem::replace(&mut self.screen, Screen::Menu) else {
+                let Screen::Confirm(mut p) = std::mem::replace(&mut self.screen, Screen::Menu)
+                else {
                     return None;
                 };
+                // Every frame, from the pristine pixels, so what was previewed
+                // is what goes out.
+                p.reencode_all();
                 match *p {
                     Pending::Picture { plan, .. } => Some(Job::UploadPicture(Box::new(plan))),
                     Pending::Gif {
@@ -666,6 +815,66 @@ impl App {
     }
 }
 
+/// Nudges the selected row. Returns whether the image needs re-encoding --
+/// the rate does not change a single pixel, so it does not.
+fn adjust_row(p: &mut Pending, row: Row, up: bool) -> bool {
+    let step = if up { ADJUST_STEP } else { -ADJUST_STEP };
+    match row {
+        Row::Rate => {
+            if let Pending::Gif {
+                plan,
+                rate_override,
+                ..
+            } = p
+            {
+                let current = rate_override.unwrap_or(plan.rate);
+                let next = if up {
+                    (current + 1).min(crate::protocol::GIF_FPS_MAX)
+                } else {
+                    current.saturating_sub(1).max(crate::protocol::GIF_FPS_MIN)
+                };
+                // Back at the file's own rate is not a choice to override it,
+                // so the fallback note applies again.
+                *rate_override = (next != plan.rate).then_some(next);
+            }
+            false
+        }
+        Row::Brightness | Row::Chroma | Row::Saturation => {
+            let adj = match p {
+                Pending::Picture { adjustments, .. } | Pending::Gif { adjustments, .. } => {
+                    adjustments
+                }
+            };
+            let field = match row {
+                Row::Brightness => &mut adj.brightness,
+                Row::Chroma => &mut adj.chroma,
+                _ => &mut adj.saturation,
+            };
+            // Rounded to the step so repeated presses cannot drift off it.
+            let next = ((*field + step) / ADJUST_STEP).round() * ADJUST_STEP;
+            let next = next.clamp(-1.0, 1.0);
+            let changed = next != *field;
+            *field = next;
+            changed
+        }
+        Row::Grayscale | Row::Sharpen | Row::Blur => toggle_row(p, row),
+    }
+}
+
+/// Flips a boolean row. Returns whether anything changed.
+fn toggle_row(p: &mut Pending, row: Row) -> bool {
+    let adj = match p {
+        Pending::Picture { adjustments, .. } | Pending::Gif { adjustments, .. } => adjustments,
+    };
+    match row {
+        Row::Grayscale => adj.grayscale = !adj.grayscale,
+        Row::Sharpen => adj.sharpen = !adj.sharpen,
+        Row::Blur => adj.blur = !adj.blur,
+        _ => return false,
+    }
+    true
+}
+
 /// Directories, plus the image files the given command accepts.
 ///
 /// Extensions are matched case-insensitively: `PHOTO.JPG` off a camera is a
@@ -724,12 +933,19 @@ mod tests {
     }
 
     fn gif_pending() -> Pending {
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), None, None).unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            None,
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         Pending::Gif {
             path: PathBuf::from("fixtures/test-anim-2frames.gif"),
             plan,
             rate_override: None,
+            adjustments: Adjustments::NONE,
+            row: 0,
         }
     }
 
@@ -1399,5 +1615,263 @@ mod tests {
             *rate_override, None,
             "back where it started means no choice was made"
         );
+    }
+
+    // --- Milestone 6: the adjustment rows ---
+
+    /// The arrows still change the frame rate, because Rate is the first row.
+    ///
+    /// This is why the confirm screen became a list instead of growing a
+    /// modifier key: the behaviour Milestone 5 shipped keeps working
+    /// untouched, and adjustments are rows below it.
+    #[test]
+    fn the_arrows_still_change_the_rate_by_default() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert_eq!(
+            p.rows()[p.row()],
+            Row::Rate,
+            "Rate is where the cursor starts"
+        );
+
+        let Pending::Gif { plan, .. } = p.as_ref() else {
+            unreachable!()
+        };
+        let native = plan.rate;
+
+        a.on_key(Key::Right);
+        a.on_key(Key::Right);
+        let job = a.on_key(Key::Enter).expect("upload");
+        match job {
+            Job::UploadGif(plan) => assert_eq!(plan.rate, native + 2),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_row_cursor_stops_at_both_ends() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        a.on_key(Key::Up);
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert_eq!(p.row(), 0);
+
+        for _ in 0..30 {
+            a.on_key(Key::Down);
+        }
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert_eq!(p.row(), Row::GIF.len() - 1);
+    }
+
+    #[test]
+    fn a_picture_has_no_rate_row() {
+        let plan =
+            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
+        let p = Pending::Picture {
+            path: PathBuf::from("p.png"),
+            plan,
+            adjustments: Adjustments::NONE,
+            row: 0,
+        };
+        assert!(!p.rows().contains(&Row::Rate));
+        assert_eq!(p.rows()[0], Row::Brightness);
+    }
+
+    #[test]
+    fn a_slider_moves_by_the_step_and_clamps() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        a.on_key(Key::Down); // -> Brightness
+
+        a.on_key(Key::Right);
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert!((p.adjustments().brightness - 0.05).abs() < 1e-9);
+
+        for _ in 0..100 {
+            a.on_key(Key::Right);
+        }
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert_eq!(p.adjustments().brightness, 1.0, "clamps at the top");
+
+        for _ in 0..200 {
+            a.on_key(Key::Left);
+        }
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert_eq!(p.adjustments().brightness, -1.0, "and at the bottom");
+    }
+
+    #[test]
+    fn space_toggles_each_boolean_row() {
+        for (steps, read) in [
+            (
+                4usize,
+                (|a: &Adjustments| a.grayscale) as fn(&Adjustments) -> bool,
+            ),
+            (5, |a: &Adjustments| a.sharpen),
+            (6, |a: &Adjustments| a.blur),
+        ] {
+            let mut a = app_ready();
+            a.screen = Screen::Confirm(Box::new(gif_pending()));
+            for _ in 0..steps {
+                a.on_key(Key::Down);
+            }
+            a.on_key(Key::Char(' '));
+            let Screen::Confirm(p) = &a.screen else {
+                unreachable!()
+            };
+            assert!(read(p.adjustments()), "row {steps} did not turn on");
+
+            a.on_key(Key::Char(' '));
+            let Screen::Confirm(p) = &a.screen else {
+                unreachable!()
+            };
+            assert!(!read(p.adjustments()), "row {steps} did not turn off again");
+        }
+    }
+
+    #[test]
+    fn zero_resets_every_adjustment_but_not_the_rate() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        a.on_key(Key::Right); // rate +1
+        a.on_key(Key::Down);
+        a.on_key(Key::Right); // brightness
+        a.on_key(Key::Down);
+        a.on_key(Key::Down);
+        a.on_key(Key::Down);
+        a.on_key(Key::Char(' ')); // grayscale
+
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert!(!p.adjustments().is_identity());
+
+        a.on_key(Key::Char('0'));
+        let Screen::Confirm(p) = &a.screen else {
+            unreachable!()
+        };
+        assert!(p.adjustments().is_identity(), "everything back to nothing");
+        let Pending::Gif { rate_override, .. } = p.as_ref() else {
+            unreachable!()
+        };
+        assert_eq!(
+            *rate_override,
+            Some(11),
+            "the rate is a separate decision and survives the reset"
+        );
+    }
+
+    /// Sliding away and back returns the original bytes exactly.
+    ///
+    /// Only true because every recompute starts from the pristine panel
+    /// pixels. Adjusting on top of the previous result would accumulate
+    /// rounding and never come home.
+    #[test]
+    fn adjusting_and_undoing_returns_the_original_pixels() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        let before = match &a.screen {
+            Screen::Confirm(p) => match p.as_ref() {
+                Pending::Gif { plan, .. } => plan.frames[0].clone(),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+
+        a.on_key(Key::Down); // Brightness
+        for _ in 0..6 {
+            a.on_key(Key::Right);
+        }
+        let during = match &a.screen {
+            Screen::Confirm(p) => match p.as_ref() {
+                Pending::Gif { plan, .. } => plan.frames[0].clone(),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        assert_ne!(during, before, "the adjustment did something");
+
+        for _ in 0..6 {
+            a.on_key(Key::Left);
+        }
+        let after = match &a.screen {
+            Screen::Confirm(p) => match p.as_ref() {
+                Pending::Gif { plan, .. } => plan.frames[0].clone(),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        assert_eq!(after, before, "back to exactly where it started");
+    }
+
+    /// What the preview showed is what gets uploaded.
+    #[test]
+    fn the_previewed_frame_equals_the_uploaded_frame() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        a.on_key(Key::Down);
+        a.on_key(Key::Right);
+        a.on_key(Key::Down);
+        a.on_key(Key::Down);
+        a.on_key(Key::Down);
+        a.on_key(Key::Char(' ')); // grayscale on
+
+        let previewed = match &a.screen {
+            Screen::Confirm(p) => p.frame().to_vec(),
+            _ => unreachable!(),
+        };
+
+        let job = a.on_key(Key::Enter).expect("upload");
+        match job {
+            Job::UploadGif(plan) => assert_eq!(
+                plan.frames[0], previewed,
+                "the upload must send the frame that was on screen"
+            ),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    /// Enter re-encodes every frame, not only the previewed one.
+    #[test]
+    fn uploading_adjusts_all_the_frames() {
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(gif_pending()));
+        let plain = match &a.screen {
+            Screen::Confirm(p) => match p.as_ref() {
+                Pending::Gif { plan, .. } => plan.frames.clone(),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+
+        a.on_key(Key::Down);
+        a.on_key(Key::Down);
+        a.on_key(Key::Down);
+        a.on_key(Key::Down);
+        a.on_key(Key::Char(' ')); // grayscale
+
+        let job = a.on_key(Key::Enter).expect("upload");
+        match job {
+            Job::UploadGif(plan) => {
+                for (i, (got, was)) in plan.frames.iter().zip(plain.iter()).enumerate() {
+                    assert_ne!(got, was, "frame {i} was left unadjusted");
+                }
+            }
+            other => panic!("got {other:?}"),
+        }
     }
 }
