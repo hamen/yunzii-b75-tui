@@ -389,8 +389,8 @@ pub const GIF_BLOCK_BYTES: usize = 1024;
 
 /// Packets per 1024-byte block, and blocks per frame -- derived, not typed
 /// twice, so the report-count arithmetic cannot drift from the chunker.
-const GIF_PACKETS_PER_BLOCK: usize = GIF_BLOCK_BYTES.div_ceil(BULK_CHUNK);
-const GIF_BLOCKS_PER_FRAME: usize = PICTURE_BYTES.div_ceil(GIF_BLOCK_BYTES);
+pub const GIF_PACKETS_PER_BLOCK: usize = GIF_BLOCK_BYTES.div_ceil(BULK_CHUNK);
+pub const GIF_BLOCKS_PER_FRAME: usize = PICTURE_BYTES.div_ceil(GIF_BLOCK_BYTES);
 
 /// The cmd-17 payload: declares one frame's byte count, `[hi, lo]` like cmd12.
 pub const CMD17_GIF_DECLARE_SIZE_PAYLOAD: [u8; 7] = [165, 90, 17, 120, 0, 197, 3];

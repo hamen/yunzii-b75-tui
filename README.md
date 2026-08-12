@@ -60,6 +60,7 @@ sudo usermod -aG plugdev "$USER"   # only if the node stays root-only; needs re-
 ./target/release/yunzii-b75-tui clear-picture
 ./target/release/yunzii-b75-tui set-picture logo.png
 ./target/release/yunzii-b75-tui set-gif mascot.gif --fps 12
+./target/release/yunzii-b75-tui set-gif mascot.gif --dry-run   # what would happen
 ```
 
 ### 🎨 `set-picture`
@@ -116,6 +117,11 @@ Takes an animated **GIF** and plays it on the panel.
 - If an upload fails part-way the animation may be incomplete; re-run
   `set-gif`. Note `clear-picture` is *not* known to clear a GIF, and there is
   no `clear-gif` command yet.
+- **`--dry-run`** decodes the file, reports the frame count, the rate it would
+  use and how long the upload would take, then stops without contacting the
+  keyboard. Worth it before a long one: a 160-frame GIF takes two and a half
+  minutes to send, and this tells you what you would get in under a second.
+  `set-picture` takes it too.
 
 Unlike `set-picture`, this does **not** reproduce the vendor's pixel output
 byte-for-byte, and `PROTOCOL.md` explains why: the vendor resamples each frame
