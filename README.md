@@ -41,10 +41,9 @@ switch -- the vendor's GIF save has three modes and every early test used mode
 0 ("set it as the startup animation"), which stores frames somewhere that never
 plays. `set-gif` uses mode 1, and the animation appears immediately.
 
-**🖥️ There's a TUI now.** Run the binary with no subcommand. Sliders and
-toggles (brightness, chroma, saturation, grayscale, "fuzzy", sharpening) aren't
-implemented; each gets its own reverse-engineering pass first, same process as
-`set-time` below. 🚧
+**🖥️ There's a TUI now.** Run the binary with no subcommand. **Picture
+adjustments** (brightness, chroma, saturation, grayscale, sharpen, blur) work
+too, on both upload commands and in the interface.
 ---
 
 ## 🖥️ The interface
@@ -77,7 +76,11 @@ Three things the CLI cannot do:
 - **Cancel.** Esc stops between reports and during the firmware's own pauses.
   There is no abort in the protocol, so it warns that the animation is partial.
 
-`←`/`→` on the confirm screen change the frame rate, the same as `--fps`.
+The confirm screen is a list of rows: `↑`/`↓` moves between them, `←`/`→`
+changes the selected one, `space` toggles a switch, and `0` resets every
+adjustment. **Rate** is the first row, so the arrows still change the frame
+rate — the same as `--fps` — until you move off it. Below it sit the six
+picture adjustments described further down.
 The keyboard is re-scanned every two seconds when it is missing, and the
 header says *why* it is missing — not found, permission denied, or two devices
 matching — because the fix differs each time.
@@ -132,6 +135,43 @@ the fix is to re-run `set-picture` or run `clear-picture`.
 
 `clear-picture` sends 32 reports (16 repeats), with the same partial-failure
 caveat.
+
+### 🎛️ Picture adjustments
+
+The vendor's "Screen Settings" sliders and toggles. Available on `set-picture`
+and `set-gif`, and as rows on the interface's confirm screen:
+
+```bash
+--brightness -1.0..1.0   --chroma -1.0..1.0   --saturation -1.0..1.0
+--grayscale              --sharpen            --blur
+```
+
+**These were never a protocol.** All four earlier milestones assumed they were
+undecoded HID commands; they are not. The vendor applies them as Fabric.js
+canvas filters *in the browser*, then uploads the resulting pixels through the
+same commands this tool already had. So this is arithmetic, copied exactly from
+the vendor's own filter code — including its rounding, which is
+`Uint8ClampedArray`'s round-half-to-even rather than either of Rust's rounding
+modes.
+
+Two deliberate differences, both because the alternative would be worse:
+
+- **`--blur` is not the vendor's blur.** Fabric's is twenty-one canvas draws
+  per axis with a `Math.random()` jitter on each — not reproducible outside a
+  browser, and not deterministic *inside* one either. This is a plain Gaussian
+  (σ = 1.0, 5-tap, separable, clamped at the edges). It will not match the
+  vendor pixel for pixel and cannot.
+- **Nothing writes to the alpha channel**, although fabric's sharpen convolves
+  it. For GIFs that is the same answer, since frames are already flattened. For
+  pictures it protects the rule above: alpha decides which pixels become black,
+  and a sharpen filter has no business moving that.
+
+Order is fixed — brightness, chroma, saturation, grayscale, sharpen, blur —
+because the vendor's depends on which switch you clicked first, which is a bug
+rather than a specification.
+
+Adjustments apply at panel size, after the stretch to 160×96. `--dry-run`
+prints which are active.
 
 ### 🎞️ `set-gif`
 

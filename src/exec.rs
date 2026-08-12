@@ -446,6 +446,7 @@ mod recorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adjust::Adjustments;
     use crate::plan;
     use std::path::Path;
 
@@ -503,7 +504,9 @@ mod tests {
     /// requires, then the 551-report body. Nothing else, in that order.
     #[test]
     fn picture_upload_choreography() {
-        let plan = plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let plan =
+            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
         let body = protocol::build_picture_upload_body(&plan.pixels);
 
         let rec = Recorder::new();
@@ -532,9 +535,13 @@ mod tests {
     /// PROTOCOL.md without running anything.
     #[test]
     fn gif_upload_choreography() {
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
-                .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(plan.frames.len(), 2);
 
         let rec = Recorder::new();
@@ -587,9 +594,13 @@ mod tests {
     /// tell them apart, which is the whole reason that fixture exists.
     #[test]
     fn the_long_pause_falls_on_every_sixteenth_frame_only() {
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-18frames.gif"), Some(10), None)
-                .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-18frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(plan.frames.len(), 18);
 
         let rec = Recorder::new();
@@ -641,9 +652,13 @@ mod tests {
     /// against what the executor emits.
     #[test]
     fn the_gif_executor_emits_exactly_the_expected_reports() {
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
-                .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let rec = Recorder::new();
         run(&rec, &mut |cx| execute_gif(&plan, cx)).unwrap();
 
@@ -675,7 +690,9 @@ mod tests {
 
     #[test]
     fn the_picture_executor_emits_exactly_the_expected_reports() {
-        let plan = plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let plan =
+            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
         let rec = Recorder::new();
         run(&rec, &mut |cx| execute_picture(&plan, cx)).unwrap();
 
@@ -695,9 +712,13 @@ mod tests {
     /// and never runs backwards.
     #[test]
     fn progress_counts_every_report_and_ends_on_the_planned_total() {
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
-                .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let never = AtomicBool::new(false);
         let rec = Recorder::new();
         let (result, events) = run_collecting(&rec, &never, &mut |cx| execute_gif(&plan, cx));
@@ -728,9 +749,13 @@ mod tests {
     /// "frame 12/36" and not only a percentage.
     #[test]
     fn progress_names_the_frame_being_sent() {
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
-                .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let never = AtomicBool::new(false);
         let rec = Recorder::new();
         let (_, events) = run_collecting(&rec, &never, &mut |cx| execute_gif(&plan, cx));
@@ -768,9 +793,13 @@ mod tests {
     /// a cancellation rather than as an I/O fault.
     #[test]
     fn cancelling_stops_promptly_and_is_not_an_io_error() {
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
-                .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let cancel = AtomicBool::new(false);
         let rec = Recorder::cancelling_after(50, &cancel);
 
@@ -823,9 +852,13 @@ mod tests {
     /// in these pauses.
     #[test]
     fn a_cancel_during_a_pause_ends_the_upload() {
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
-                .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let cancel = AtomicBool::new(false);
         // Two session-open reports go out, then the 30 ms pause: trip the flag
         // during it by arming after exactly those two.
@@ -873,9 +906,13 @@ mod tests {
     /// sends differs. So the assertion is on that position.
     #[test]
     fn a_frame_is_reported_only_after_its_whole_body_is_sent() {
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
-                .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let never = AtomicBool::new(false);
         let rec = Recorder::new();
         let (result, events) = run_collecting(&rec, &never, &mut |cx| execute_gif(&plan, cx));
@@ -911,9 +948,13 @@ mod tests {
     /// A GIF that fails part-way must not have reported the frame it was on.
     #[test]
     fn an_interrupted_frame_is_never_reported_as_done() {
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), Some(10), None)
-                .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let cancel = AtomicBool::new(false);
         // Stop inside frame 0's body: past its header, well before its blocks
         // are finished.
@@ -938,7 +979,9 @@ mod tests {
     /// still reaches anyone after the move.
     #[test]
     fn a_nonzero_drain_becomes_a_note() {
-        let plan = plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let plan =
+            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
         let never = AtomicBool::new(false);
         let rec = Recorder::draining(3);
         let (result, events) = run_collecting(&rec, &never, &mut |cx| execute_picture(&plan, cx));
@@ -971,7 +1014,9 @@ mod tests {
     /// nothing proved the replacement path actually carries them.
     #[test]
     fn transport_diagnostics_become_notes_rather_than_output() {
-        let plan = plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let plan =
+            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
         let never = AtomicBool::new(false);
         let rec = Recorder::chatty("DEBUG send: de ad be ef");
         let (result, events) = run_collecting(&rec, &never, &mut |cx| execute_picture(&plan, cx));

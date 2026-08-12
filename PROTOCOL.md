@@ -638,6 +638,73 @@ Both, along with the delay fixtures behind the frame-rate tests, are built by
 `scripts/make-test-gifs.js`, a dependency-free GIF89a writer. Committed binary
 fixtures that nobody can regenerate are their own kind of unverifiable.
 
+## The "Screen Settings" sliders are not protocol at all
+
+Four milestones treated brightness, chroma, saturation, grayscale, "Fuzzy" and
+sharpening as undecoded commands waiting for a capture session. They are not
+commands. **They send no HID.**
+
+Every one is a [Fabric.js](https://fabricjs.com) canvas filter the vendor
+applies to the image in the browser; the adjusted pixels then go out through
+the picture or GIF upload already documented above. Read from the vendor
+bundle's `applyTo2d` — the CPU path, which is each filter's canonical
+definition:
+
+| Control | Vendor implementation |
+|---|---|
+| Brightness | `filters.Brightness`, offset `Math.round(v * 255)` per channel |
+| Chroma | `ColorMatrix`; reduces to `r*(1+v)`, `g*(1+v*0.5)`, `b*(1-v)` |
+| Saturation | `filters.Saturation`, `w = -v`, `c += (max - c) * w` |
+| Gray scale | `filters.Grayscale`, mode `average`: `(r+g+b)/3` |
+| "Fuzzy" | `filters.Blur({blur: 1})` |
+| Sharpening | `Convolute`, kernel `[0,-1,0, -1,5,-1, 0,-1,0]` |
+
+Sliders run −1 to 1 in steps of 0.01.
+
+Three details that a careless port gets wrong, all verified against the bundle
+rather than assumed:
+
+1. **Channel writes go through `Uint8ClampedArray`**, which clamps to 0..255
+   and rounds **half to even**. That is neither Rust's `round` (half away from
+   zero) nor an `as u8` cast (truncates). JavaScript's `Math.round`, used for
+   the brightness offset, is a third rule again — `floor(x + 0.5)`.
+2. **`Convolute` zero-pads its edges.** Out-of-bounds samples are skipped, not
+   clamped to the nearest pixel, so a sharpened border comes out *brighter*
+   than the interior: the dropped taps are the negative ones.
+3. **`Convolute` also convolves alpha**, because the vendor passes no `opaque`
+   option.
+
+### What this repo does differently, and why
+
+- **The blur is ours.** Fabric's 2-D blur draws onto two scratch canvases
+  twenty-one times per axis with `globalAlpha` compositing and a
+  `Math.random()` jitter per pass. It is not reproducible outside a browser and
+  not deterministic inside one. Same situation as the GIF frame resampling
+  recorded above, and the same answer: a documented Gaussian instead, specified
+  here so it is as pinned as the vendor's own filters:
+
+  | | |
+  |---|---|
+  | Kernel | `[0.06136, 0.24477, 0.38774, 0.24477, 0.06136]` — sigma 1.0 sampled at −2..2, normalised to 1.0, written as literals rather than derived |
+  | Passes | separable: horizontal, then vertical |
+  | Edges | clamp to edge. Not zero padding, which darkens the border — a visible frame around a 160×96 image |
+  | Channels | RGB only; alpha untouched |
+  | Rounding | `f64` throughout, one clamped round per pass, so two in total |
+
+  A fully transparent pixel is blackened before any spatial filter runs. Its
+  RGB is never displayed — the encoder turns alpha 0 into black — but a blur
+  would otherwise sample that hidden colour and smear it into neighbours that
+  *are* displayed.
+- **Nothing writes alpha.** Matching fabric for GIFs (already flattened, so the
+  kernel returns 255), and deliberately not for pictures, where alpha decides
+  which pixels the encoder blackens.
+- **The order is fixed** at brightness → chroma → saturation → grayscale →
+  sharpen → blur. The vendor pushes each filter as its switch is toggled, so
+  its result depends on click order. That is not a specification to copy.
+- **Applied at panel size**, after the stretch to 160×96, where the vendor
+  works on the full-resolution canvas. A 160-frame GIF from a 4K source would
+  otherwise be gigabytes of RGBA.
+
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
 **Resolved** — every transmit-required field for "Update device time": HID op
@@ -686,15 +753,26 @@ frame rate. Milestone 4 implements them.
 
 ## What's next
 
-Milestones 1-4 ship `set-time`, `switch-page home`/`picture`/`gif`,
-`clear-picture`, `set-picture` and `set-gif` -- see `README.md`.
+Milestones 1-6 ship `set-time`, `switch-page home`/`picture`/`gif`,
+`clear-picture`, `set-picture`, `set-gif`, the `ratatui` interface this repo is
+named after, and the picture adjustments -- see `README.md`.
 
-What is left: the sliders and toggles (brightness, chroma, saturation,
-grayscale, "fuzzy", sharpening), the vendor's "in the middle" vs "cover up
-completely" placement setting, a `clear-gif` command if one exists, and the
-`ratatui` screen this repo is named after -- which is now worth building, since
-there are finally more actions than a flat CLI wants to carry.
+Two of those turned out not to need a discovery pass at all, and the pattern is
+worth noticing: **the sliders and toggles were never protocol** (see the
+section above), and `switch-page gif` had been correct since Milestone 2 while
+being blamed for a fault in how the GIF was *saved*. Reading the vendor's own
+source answered both faster than another capture session would have.
 
-Each still needs its own discovery pass, same process as this document. The
-generic opcode / checksum / report-structure model carries over directly; only
-the per-command payload layout differs.
+What is genuinely left:
+
+- The vendor's "in the middle" versus "cover up completely" placement setting.
+  Likely another client-side transform rather than a command; check the bundle
+  before capturing anything.
+- A `clear-gif` command, if one exists. Live capture showed the vendor's button
+  is structurally unrelated to `clear-picture`, and it is still undecoded.
+- GIF save modes 0 and 2, decoded but never exercised.
+- Whether `clear-picture` disturbs a stored GIF.
+
+The generic opcode / checksum / report-structure model carries over directly to
+anything that does turn out to be a command; only the per-command payload
+layout differs.

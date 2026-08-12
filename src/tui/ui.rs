@@ -1,6 +1,6 @@
 //! Drawing. No decisions live here -- everything it shows is already in `App`.
 
-use crate::tui::app::{Action, App, Pending, Screen};
+use crate::tui::app::{Action, App, Pending, Row, Screen};
 use crate::tui::preview;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -163,21 +163,17 @@ fn browse(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn confirm(f: &mut Frame, area: Rect, pending: &Pending) {
-    let cols = Layout::horizontal([Constraint::Percentage(60), Constraint::Min(24)]).split(area);
+    let cols = Layout::horizontal([Constraint::Percentage(55), Constraint::Min(28)]).split(area);
     preview_pane(f, cols[0], pending);
 
-    let (name, mut lines) = match pending {
+    let (name, header) = match pending {
         Pending::Picture { path, plan, .. } => {
             let mut v = vec![
                 format!("160x96, {} bytes", plan.pixels.len()),
                 format!("{} reports", plan.total_reports),
             ];
-            // Rendered like the GIF path rather than assumed empty: picture
-            // notes happen to duplicate the two lines above today, and a
-            // planner that grew a warning would otherwise show it in one
-            // command and swallow it in the other.
             for n in &plan.notes {
-                if !v.iter().any(|existing| existing.contains(&n.text)) {
+                if !v.iter().any(|e| e.contains(&n.text)) {
                     v.push(n.text.clone());
                 }
             }
@@ -189,23 +185,13 @@ fn confirm(f: &mut Frame, area: Rect, pending: &Pending) {
             rate_override,
             ..
         } => {
-            let rate = rate_override.unwrap_or(plan.rate);
             let mut v = vec![
                 format!("{} frames of {}", plan.frames.len(), plan.source_count),
-                format!(
-                    "{rate} fps{}",
-                    if rate_override.is_some() {
-                        " (chosen)"
-                    } else {
-                        ""
-                    }
-                ),
                 format!("~{}s to upload", plan.est_secs),
             ];
             for n in &plan.notes {
                 // A rate chosen by hand is the equivalent of `--fps`, so the
-                // planner's "using 30 fps instead" no longer applies. Showing
-                // it next to a rate the user just set would be a lie.
+                // planner's "using 30 fps instead" no longer applies.
                 if rate_override.is_some() && n.kind == crate::plan::NoteKind::RateFallback {
                     continue;
                 }
@@ -214,22 +200,72 @@ fn confirm(f: &mut Frame, area: Rect, pending: &Pending) {
             (path.file_name().unwrap_or_default().to_string_lossy(), v)
         }
     };
-    lines.push(String::new());
-    lines.push("Enter to upload · Esc to discard".into());
-    if matches!(pending, Pending::Gif { .. }) {
-        lines.push("← → to change the rate".into());
+    let rows = pending.rows();
+    let selected = pending.row();
+    let adj = pending.adjustments();
+
+    // Controls first, notes after.
+    //
+    // The other way round, a wrapped rate warning could push Sharpen and Blur
+    // off the bottom of an 80x24 terminal while the cursor could still select
+    // them -- rows you can change but cannot see. The notes are reference; the
+    // rows are the thing being operated.
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (i, row) in rows.iter().enumerate() {
+        let value = match row {
+            Row::Rate => match pending {
+                Pending::Gif {
+                    plan,
+                    rate_override,
+                    ..
+                } => format!(
+                    "{} fps{}",
+                    rate_override.unwrap_or(plan.rate),
+                    if rate_override.is_some() {
+                        " (chosen)"
+                    } else {
+                        ""
+                    }
+                ),
+                _ => String::new(),
+            },
+            Row::Brightness => format!("{:+.2}", adj.brightness),
+            Row::Chroma => format!("{:+.2}", adj.chroma),
+            Row::Saturation => format!("{:+.2}", adj.saturation),
+            Row::Grayscale => on_off(adj.grayscale),
+            Row::Sharpen => on_off(adj.sharpen),
+            Row::Blur => on_off(adj.blur),
+        };
+        let mut style = Style::default();
+        if i == selected {
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        lines.push(Line::from(Span::styled(
+            format!(" {:<11}{} ", row.label(), value),
+            style,
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("Enter to upload · Esc to discard"));
+    lines.push(Line::from(""));
+    for line in header {
+        lines.push(Line::from(line));
     }
 
     f.render_widget(
-        Paragraph::new(lines.join("\n"))
-            .wrap(Wrap { trim: true })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!(" {name} ")),
-            ),
+        Paragraph::new(lines).wrap(Wrap { trim: true }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {name} ")),
+        ),
         cols[1],
     );
+}
+
+fn on_off(v: bool) -> String {
+    if v { "on".into() } else { "off".into() }
 }
 
 /// The frame as it will reach the panel, in half-blocks.
@@ -340,10 +376,9 @@ fn keys(f: &mut Frame, area: Rect, app: &App) {
     let hint = match &app.screen {
         Screen::Menu => "q quit · ↑↓ move · ⏎ run",
         Screen::Browse { .. } => "esc back · ↑↓ move · ⏎ open · ⌫ parent · ~ home",
-        Screen::Confirm(p) => match p.as_ref() {
-            Pending::Gif { .. } => "esc discard · ⏎ upload · ← → rate",
-            Pending::Picture { .. } => "esc discard · ⏎ upload",
-        },
+        Screen::Confirm(_) => {
+            "esc discard · ⏎ upload · ↑↓ row · ← → change · space toggle · 0 reset"
+        }
         Screen::Running(_) => "esc cancel · q quit",
     };
     f.render_widget(
@@ -355,6 +390,7 @@ fn keys(f: &mut Frame, area: Rect, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adjust::Adjustments;
     use crate::plan;
     use crate::tui::app::{DeviceState, Key, Update};
     use ratatui::Terminal;
@@ -460,11 +496,15 @@ mod tests {
 
     #[test]
     fn the_preview_pane_draws_half_blocks() {
-        let plan = plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let plan =
+            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
         let mut a = app_ready();
         a.screen = Screen::Confirm(Box::new(Pending::Picture {
             path: PathBuf::from("fixtures/test-quadrants.png"),
             plan,
+            adjustments: Adjustments::NONE,
+            row: 0,
         }));
 
         let out = render_at(&a, 100, 30);
@@ -480,8 +520,13 @@ mod tests {
     /// the whole program down while the user's screen is in raw mode.
     #[test]
     fn every_screen_survives_a_tiny_terminal() {
-        let plan =
-            plan::plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), None, None).unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            None,
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
 
         let mut screens: Vec<App> = Vec::new();
         screens.push(app_ready());
@@ -502,6 +547,8 @@ mod tests {
                 path: PathBuf::from("x.gif"),
                 plan,
                 rate_override: Some(24),
+                adjustments: Adjustments::NONE,
+                row: 0,
             }));
             screens.push(a);
         }
@@ -532,11 +579,15 @@ mod tests {
     /// metadata survives, which is the part you cannot guess by looking.
     #[test]
     fn a_narrow_terminal_keeps_the_facts_and_drops_the_picture() {
-        let plan = plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let plan =
+            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
         let mut a = app_ready();
         a.screen = Screen::Confirm(Box::new(Pending::Picture {
             path: PathBuf::from("p.png"),
             plan,
+            adjustments: Adjustments::NONE,
+            row: 0,
         }));
 
         let narrow = render_at(&a, 24, 20);
@@ -572,8 +623,13 @@ mod tests {
     #[test]
     fn a_chosen_rate_removes_the_superseded_warning() {
         // A GIF whose delays ask for 100 fps, so the planner warns.
-        let plan = plan::plan_gif_upload(Path::new("fixtures/test-anim-too-fast.gif"), None, None)
-            .unwrap();
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-too-fast.gif"),
+            None,
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert!(
             plan.notes
                 .iter()
@@ -586,6 +642,8 @@ mod tests {
             path: PathBuf::from("fast.gif"),
             plan,
             rate_override: None,
+            adjustments: Adjustments::NONE,
+            row: 0,
         }));
         let before = render_at(&a, 110, 30);
         assert!(before.contains("100"), "the warning is shown by default");
@@ -606,11 +664,15 @@ mod tests {
     /// The rate hint belongs only to GIFs.
     #[test]
     fn a_picture_confirm_does_not_offer_a_rate() {
-        let plan = plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let plan =
+            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
         let mut a = app_ready();
         a.screen = Screen::Confirm(Box::new(Pending::Picture {
             path: PathBuf::from("p.png"),
             plan,
+            adjustments: Adjustments::NONE,
+            row: 0,
         }));
         let out = render_at(&a, 110, 30);
         assert!(
@@ -621,5 +683,44 @@ mod tests {
             !out.contains("→ rate"),
             "pictures have no frame rate:\n{out}"
         );
+    }
+
+    /// Every control stays visible on a common terminal, even when a wrapped
+    /// warning is competing for the space.
+    ///
+    /// A row the cursor can select but the screen cannot show is worse than a
+    /// missing feature: the user changes something and sees nothing move.
+    #[test]
+    fn all_the_controls_fit_at_eighty_by_twentyfour() {
+        // A GIF whose delays ask for 100 fps, so the planner adds a warning
+        // long enough to wrap in a narrow pane.
+        let plan = plan::plan_gif_upload(
+            Path::new("fixtures/test-anim-too-fast.gif"),
+            None,
+            None,
+            &crate::adjust::Adjustments::NONE,
+        )
+        .unwrap();
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(Pending::Gif {
+            path: PathBuf::from("fast.gif"),
+            plan,
+            rate_override: None,
+            adjustments: crate::adjust::Adjustments::NONE,
+            row: 0,
+        }));
+
+        let out = render_at(&a, 80, 24);
+        for label in [
+            "Rate",
+            "Brightness",
+            "Chroma",
+            "Saturation",
+            "Grayscale",
+            "Sharpen",
+            "Blur",
+        ] {
+            assert!(out.contains(label), "{label} is off screen:\n{out}");
+        }
     }
 }

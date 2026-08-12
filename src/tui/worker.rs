@@ -10,6 +10,7 @@
 //! job: probing means draining the device, and draining mid-upload would eat
 //! the acknowledgements the upload is waiting for.
 
+use crate::adjust::Adjustments;
 use crate::device::{self, Device, DeviceError, ReportIdForm};
 use crate::exec::{self, ExecCtx, ExecEvent, Phase, SystemClock, Transport};
 use crate::plan;
@@ -170,24 +171,32 @@ fn run_job(
                 notes,
             )
         })),
-        Job::UploadPicture(plan) => Some(upload(
-            tx,
-            ready,
-            "Uploading picture",
-            plan.total_reports,
-            None,
-            |cx| exec::execute_picture(&plan, cx),
-            "the picture may be partially written -- re-run it, or clear the picture",
-        )),
-        Job::UploadGif(plan) => Some(upload(
-            tx,
-            ready,
-            "Uploading GIF",
-            plan.total_reports,
-            Some(plan.est_secs),
-            |cx| exec::execute_gif(&plan, cx),
-            "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it",
-        )),
+        Job::UploadPicture(mut plan) => {
+            // The interface only ever re-encoded the frame it was showing;
+            // everything else is caught up here, off the drawing thread.
+            plan.reencode();
+            Some(upload(
+                tx,
+                ready,
+                "Uploading picture",
+                plan.total_reports,
+                None,
+                |cx| exec::execute_picture(&plan, cx),
+                "the picture may be partially written -- re-run it, or clear the picture",
+            ))
+        }
+        Job::UploadGif(mut plan) => {
+            plan.reencode();
+            Some(upload(
+                tx,
+                ready,
+                "Uploading GIF",
+                plan.total_reports,
+                Some(plan.est_secs),
+                |cx| exec::execute_gif(&plan, cx),
+                "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it",
+            ))
+        }
     }
 }
 
@@ -196,7 +205,7 @@ fn build_preview(path: &std::path::Path, for_gif: bool) -> Result<Pending, Strin
         // No `max_frames`: sampling a long animation down is a decision with a
         // suggested rate attached, and this interface has nowhere sensible to
         // put that conversation yet. Refusing with a pointer is honest.
-        let plan = plan::plan_gif_upload(path, None, None).map_err(|e| {
+        let plan = plan::plan_gif_upload(path, None, None, &Adjustments::NONE).map_err(|e| {
             let mut m = e.to_string();
             // Matched against a constant the planner owns, not against its
             // prose: a reworded message must not silently drop the guidance.
@@ -212,12 +221,17 @@ fn build_preview(path: &std::path::Path, for_gif: bool) -> Result<Pending, Strin
             path: path.to_path_buf(),
             plan,
             rate_override: None,
+            adjustments: Adjustments::NONE,
+            row: 0,
         })
     } else {
-        let plan = plan::plan_picture_upload(path).map_err(|e| e.to_string())?;
+        let plan =
+            plan::plan_picture_upload(path, &Adjustments::NONE).map_err(|e| e.to_string())?;
         Ok(Pending::Picture {
             path: path.to_path_buf(),
             plan,
+            adjustments: Adjustments::NONE,
+            row: 0,
         })
     }
 }

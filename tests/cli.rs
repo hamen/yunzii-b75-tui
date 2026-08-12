@@ -270,6 +270,88 @@ fn an_over_long_gif_is_refused_with_the_flag_that_solves_it() {
     assert!(stderr(&out).to_lowercase().contains("max-frames"));
 }
 
+/// The adjustment flags are bounded at parse time, not clamped silently.
+#[test]
+fn adjustments_out_of_range_are_a_usage_error() {
+    for flag in ["--brightness", "--chroma", "--saturation"] {
+        for bad in ["1.5", "-2", "abc"] {
+            let out = run(&["set-picture", "fixtures/test-quadrants.png", flag, bad]);
+            assert!(!out.status.success(), "{flag} {bad} should be rejected");
+            let err = stderr(&out).to_lowercase();
+            assert!(
+                err.contains("between -1.0 and 1.0") || err.contains("not a number"),
+                "{flag} {bad}: got {err}"
+            );
+        }
+        // The bounds themselves are fine.
+        for good in ["-1", "0", "1", "0.25"] {
+            let out = run(&[
+                "set-picture",
+                "fixtures/test-quadrants.png",
+                flag,
+                good,
+                "--dry-run",
+            ]);
+            assert!(out.status.success(), "{flag} {good}: {}", stderr(&out));
+        }
+    }
+}
+
+/// A dry run says which adjustments are on, so the effect is visible without
+/// an upload.
+#[test]
+fn a_dry_run_reports_the_active_adjustments() {
+    let out = run(&[
+        "set-gif",
+        "fixtures/test-anim-2frames.gif",
+        "--brightness",
+        "-0.5",
+        "--grayscale",
+        "--dry-run",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let o = stdout(&out);
+    assert!(o.contains("adjustments:"), "got: {o}");
+    assert!(o.contains("brightness -0.50"), "got: {o}");
+    assert!(o.contains("grayscale"), "got: {o}");
+    assert!(!o.contains("chroma"), "only what is on: {o}");
+}
+
+/// With no adjustment flags, nothing is announced -- the untouched path stays
+/// exactly as quiet as it was.
+#[test]
+fn without_adjustments_nothing_is_announced() {
+    let out = run(&["set-picture", "fixtures/test-quadrants.png", "--dry-run"]);
+    assert!(out.status.success());
+    assert!(!stdout(&out).contains("adjustments:"), "{}", stdout(&out));
+}
+
+/// Both upload commands accept the same set.
+#[test]
+fn both_commands_take_the_same_adjustments() {
+    for (cmd, file) in [
+        ("set-picture", "fixtures/test-quadrants.png"),
+        ("set-gif", "fixtures/test-anim-2frames.gif"),
+    ] {
+        let out = run(&[
+            cmd,
+            file,
+            "--brightness",
+            "0.1",
+            "--chroma",
+            "-0.1",
+            "--saturation",
+            "0.2",
+            "--grayscale",
+            "--sharpen",
+            "--blur",
+            "--dry-run",
+        ]);
+        assert!(out.status.success(), "{cmd}: {}", stderr(&out));
+        assert!(stdout(&out).contains("adjustments:"), "{cmd}");
+    }
+}
+
 /// `--help` works without a device and names every shipped command.
 #[test]
 fn help_lists_the_commands() {

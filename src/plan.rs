@@ -17,6 +17,7 @@
 //! inline inside a function that opened a device. Returned as data, asserting
 //! them is an ordinary unit test.
 
+use crate::adjust::Adjustments;
 use crate::protocol;
 use image::ImageDecoder; // for `decoder.orientation()` / `set_limits()`
 use std::num::NonZeroUsize;
@@ -78,7 +79,10 @@ impl std::error::Error for MediaError {}
 /// Reads an image file and converts it to the panel's 30720-byte RGB565
 /// frame. Pure of any device access on purpose: a bad path or a corrupt file
 /// must fail as an image problem, and must be testable without hardware.
-pub fn load_and_encode_picture(path: &Path) -> Result<Vec<u8>, MediaError> {
+pub fn load_and_encode_picture(
+    path: &Path,
+    adjustments: &Adjustments,
+) -> Result<(Vec<u8>, Vec<u8>), MediaError> {
     let fail = |detail: String| MediaError {
         kind: MediaKind::Picture,
         path: path.to_path_buf(),
@@ -115,9 +119,12 @@ pub fn load_and_encode_picture(path: &Path) -> Result<Vec<u8>, MediaError> {
         image::imageops::FilterType::Nearest,
     );
 
-    let pixels = protocol::rgb565_encode(resized.to_rgba8().as_raw());
+    // Panel-sized, immediately before the encode. `is_identity` short-circuits
+    // so an unadjusted upload produces the same bytes it always has.
+    let panel = resized.to_rgba8().into_raw();
+    let pixels = adjust_and_encode(&panel, adjustments);
     debug_assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
-    Ok(pixels)
+    Ok((pixels, panel))
 }
 
 /// One GIF's frames, already converted to panel-ready RGB565, plus what the
@@ -125,6 +132,10 @@ pub fn load_and_encode_picture(path: &Path) -> Result<Vec<u8>, MediaError> {
 #[derive(Debug)]
 pub struct GifFrames {
     frames: Vec<Vec<u8>>,
+    /// The same frames before adjustment and before the RGB565 encode, panel
+    /// sized. Kept so the interface can re-adjust from pristine pixels rather
+    /// than stacking one adjustment on the last.
+    panel_rgba: Vec<Vec<u8>>,
     /// Frames in the source file, before any subsampling.
     source_count: usize,
     /// What the source file's own delays imply about the frame rate, and --
@@ -217,6 +228,7 @@ impl SourceRate {
 pub fn load_gif_frames(
     path: &Path,
     max_frames: Option<NonZeroUsize>,
+    adjustments: &Adjustments,
 ) -> Result<GifFrames, MediaError> {
     let fail = |detail: String| MediaError {
         kind: MediaKind::Gif,
@@ -257,6 +269,7 @@ pub fn load_gif_frames(
 
     // Pass 2: walk every frame again, encode only the selected ones.
     let mut frames = Vec::with_capacity(keep.len());
+    let mut panel_rgba = Vec::with_capacity(keep.len());
     for (i, frame) in gif_frames_iter(path)?.enumerate() {
         let frame = frame.map_err(|e| fail(format!("could not decode a frame: {e}")))?;
         if !keep.contains(&i) {
@@ -269,7 +282,9 @@ pub fn load_gif_frames(
             protocol::PANEL_H,
             image::imageops::FilterType::Nearest,
         );
-        frames.push(protocol::rgb565_encode(resized.to_rgba8().as_raw()));
+        let panel = resized.to_rgba8().into_raw();
+        frames.push(adjust_and_encode(&panel, adjustments));
+        panel_rgba.push(panel);
     }
 
     // A zero delay is "as fast as possible", which is not a rate the file is
@@ -300,6 +315,7 @@ pub fn load_gif_frames(
 
     Ok(GifFrames {
         frames,
+        panel_rgba,
         source_count,
         rate,
     })
@@ -460,6 +476,11 @@ impl Note {
 #[derive(Debug)]
 pub struct PicturePlan {
     pub pixels: Vec<u8>,
+    /// Panel-sized RGBA before adjustment; see `GifFrames::panel_rgba`.
+    pub panel_rgba: Vec<u8>,
+    /// What `pixels` was encoded with. Changing it and calling `reencode`
+    /// is how the interface applies a new setting.
+    pub adjustments: Adjustments,
     pub total_reports: usize,
     pub notes: Vec<Note>,
 }
@@ -468,6 +489,10 @@ pub struct PicturePlan {
 #[derive(Debug)]
 pub struct GifPlan {
     pub frames: Vec<Vec<u8>>,
+    /// Panel-sized RGBA before adjustment, one per encoded frame.
+    pub panel_rgba: Vec<Vec<u8>>,
+    /// What `frames` was encoded with; see `PicturePlan::adjustments`.
+    pub adjustments: Adjustments,
     pub rate: u8,
     /// Which of the vendor's three GIF modes to save into. Carried rather than
     /// hardcoded in the executor because it is a property of what was decided,
@@ -484,8 +509,11 @@ pub struct GifPlan {
 }
 
 /// Reads a PNG or JPEG and decides everything about its upload.
-pub fn plan_picture_upload(path: &Path) -> Result<PicturePlan, MediaError> {
-    let pixels = load_and_encode_picture(path)?;
+pub fn plan_picture_upload(
+    path: &Path,
+    adjustments: &Adjustments,
+) -> Result<PicturePlan, MediaError> {
+    let (pixels, panel_rgba) = load_and_encode_picture(path, adjustments)?;
     let total_reports = protocol::picture_upload_report_count();
     Ok(PicturePlan {
         // Only what the planner alone knows. The CLI's "sending N reports"
@@ -502,6 +530,8 @@ pub fn plan_picture_upload(path: &Path) -> Result<PicturePlan, MediaError> {
             pixels.len()
         ))],
         pixels,
+        panel_rgba,
+        adjustments: *adjustments,
         total_reports,
     })
 }
@@ -513,6 +543,47 @@ pub fn plan_picture_upload(path: &Path) -> Result<PicturePlan, MediaError> {
 /// message must not silently drop that.
 pub const TOO_MANY_FRAMES: &str = "more frames than the keyboard can store";
 
+impl PicturePlan {
+    /// Re-encodes from the pristine panel pixels with the current settings.
+    ///
+    /// Cheap for a picture -- one frame -- but it lives here beside the GIF
+    /// version so both front ends call the same thing.
+    pub fn reencode(&mut self) {
+        self.pixels = adjust_and_encode(&self.panel_rgba, &self.adjustments);
+    }
+}
+
+impl GifPlan {
+    /// Re-encodes every frame from the pristine panel pixels.
+    ///
+    /// Up to 160 frames through six filters, so this belongs on the worker
+    /// thread, never on the one drawing the screen.
+    pub fn reencode(&mut self) {
+        for (out, src) in self.frames.iter_mut().zip(self.panel_rgba.iter()) {
+            *out = adjust_and_encode(src, &self.adjustments);
+        }
+    }
+}
+
+/// Applies adjustments to one panel-sized RGBA frame and encodes it.
+///
+/// The single place adjustment meets encoding, so the command line and the
+/// interface cannot produce different pixels from the same numbers. The
+/// interface re-runs exactly this on the pristine frame every time a slider
+/// moves, which is what keeps "what the preview shows is what gets uploaded"
+/// true.
+pub fn adjust_and_encode(panel_rgba: &[u8], adjustments: &Adjustments) -> Vec<u8> {
+    if adjustments.is_identity() {
+        // Byte-for-byte what this did before adjustments existed.
+        return protocol::rgb565_encode(panel_rgba);
+    }
+    let mut img =
+        image::RgbaImage::from_raw(protocol::PANEL_W, protocol::PANEL_H, panel_rgba.to_vec())
+            .expect("panel-sized buffer");
+    adjustments.apply(&mut img);
+    protocol::rgb565_encode(img.as_raw())
+}
+
 /// Reads a GIF and decides everything about its upload: which frames, at what
 /// rate, and what the user needs to be told about both.
 ///
@@ -523,8 +594,9 @@ pub fn plan_gif_upload(
     path: &Path,
     fps: Option<u8>,
     max_frames: Option<NonZeroUsize>,
+    adjustments: &Adjustments,
 ) -> Result<GifPlan, MediaError> {
-    let gif = load_gif_frames(path, max_frames)?;
+    let gif = load_gif_frames(path, max_frames, adjustments)?;
     let frame_count = gif.frames.len();
     let rate = match fps {
         Some(f) => f,
@@ -565,6 +637,8 @@ pub fn plan_gif_upload(
 
     Ok(GifPlan {
         frames: gif.frames,
+        panel_rgba: gif.panel_rgba,
+        adjustments: *adjustments,
         rate,
         mode: protocol::GIF_MODE_SAVE_TO_DEVICE,
         source_count: gif.source_count,
@@ -585,7 +659,8 @@ mod tests {
 
     #[test]
     fn missing_file_fails_as_a_picture_error_not_a_device_error() {
-        let err = load_and_encode_picture(Path::new("/nonexistent/nope.png")).unwrap_err();
+        let err = load_and_encode_picture(Path::new("/nonexistent/nope.png"), &Adjustments::NONE)
+            .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("nope.png"), "should name the file: {msg}");
         assert!(
@@ -599,7 +674,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.png");
         std::fs::write(&path, b"").unwrap();
-        assert!(load_and_encode_picture(&path).is_err());
+        assert!(load_and_encode_picture(&path, &Adjustments::NONE).is_err());
     }
 
     #[test]
@@ -611,7 +686,7 @@ mod tests {
         let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
         bytes.extend_from_slice(b"not actually a png body at all");
         std::fs::write(&path, &bytes).unwrap();
-        assert!(load_and_encode_picture(&path).is_err());
+        assert!(load_and_encode_picture(&path, &Adjustments::NONE).is_err());
     }
 
     #[test]
@@ -619,7 +694,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("notes.txt");
         std::fs::write(&path, b"this is plain text, not an image").unwrap();
-        assert!(load_and_encode_picture(&path).is_err());
+        assert!(load_and_encode_picture(&path, &Adjustments::NONE).is_err());
     }
 
     #[test]
@@ -627,7 +702,9 @@ mod tests {
         // The committed test image is already 160x96, so this also confirms
         // the resize path is a no-op at the exact panel size rather than
         // shifting pixels.
-        let pixels = load_and_encode_picture(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let (pixels, _) =
+            load_and_encode_picture(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
         assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
 
         // Same bytes the vendor's own tool sent for this file: red top-left,
@@ -676,7 +753,9 @@ mod tests {
             v.try_into().unwrap()
         };
 
-        let pixels = load_and_encode_picture(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let (pixels, _) =
+            load_and_encode_picture(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
         let mut built = vec![protocol::build_picture_upload_start()];
         built.extend(protocol::build_picture_upload_body(&pixels));
 
@@ -694,7 +773,11 @@ mod tests {
 
     #[test]
     fn exif_orientation_is_actually_applied_to_jpegs() {
-        let pixels = load_and_encode_picture(Path::new("fixtures/test-exif-rotated.jpg")).unwrap();
+        let (pixels, _) = load_and_encode_picture(
+            Path::new("fixtures/test-exif-rotated.jpg"),
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
 
         let px = |x: usize, y: usize| {
@@ -763,7 +846,7 @@ mod tests {
         image::RgbImage::from_pixel(37, 211, image::Rgb([255, 0, 0]))
             .save(&path)
             .unwrap();
-        let pixels = load_and_encode_picture(&path).unwrap();
+        let (pixels, _) = load_and_encode_picture(&path, &Adjustments::NONE).unwrap();
         assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
         assert_eq!(&pixels[0..2], &[0xf8, 0x00]);
     }
@@ -793,7 +876,12 @@ mod tests {
     /// the test that can actually fail if disposal is ignored.
     #[test]
     fn gif_sub_rectangle_frames_are_composed_onto_the_previous_canvas() {
-        let gif = load_gif_frames(Path::new("fixtures/test-anim-disposal.gif"), None).unwrap();
+        let gif = load_gif_frames(
+            Path::new("fixtures/test-anim-disposal.gif"),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(gif.frames.len(), 2);
         for f in &gif.frames {
             assert_eq!(
@@ -850,6 +938,7 @@ mod tests {
         let gif = load_gif_frames(
             Path::new("fixtures/test-anim-disposal-background.gif"),
             None,
+            &Adjustments::NONE,
         )
         .unwrap();
         assert_eq!(gif.frames.len(), 2);
@@ -904,8 +993,12 @@ mod tests {
     /// animates at one rate, so the fallback must say so and name the average.
     #[test]
     fn variable_delays_fall_back_with_a_warning_that_names_the_average() {
-        let gif =
-            load_gif_frames(Path::new("fixtures/test-anim-variable-delay.gif"), None).unwrap();
+        let gif = load_gif_frames(
+            Path::new("fixtures/test-anim-variable-delay.gif"),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(gif.source_count, 3);
 
         // 100, 400, 100 ms -> mean 200 ms.
@@ -939,7 +1032,12 @@ mod tests {
     /// nothing printed. The warning is the point of this test.
     #[test]
     fn uniform_but_out_of_range_delays_warn_instead_of_clamping_silently() {
-        let gif = load_gif_frames(Path::new("fixtures/test-anim-too-fast.gif"), None).unwrap();
+        let gif = load_gif_frames(
+            Path::new("fixtures/test-anim-too-fast.gif"),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
 
         // 10 ms delays -> 100 fps, above the device's 60.
         match gif.rate {
@@ -1009,7 +1107,12 @@ mod tests {
     /// match. Range-checking before rounding is what makes it `OutOfRange`.
     #[test]
     fn delays_below_one_fps_are_out_of_range_not_rounded_up() {
-        let gif = load_gif_frames(Path::new("fixtures/test-anim-too-slow.gif"), None).unwrap();
+        let gif = load_gif_frames(
+            Path::new("fixtures/test-anim-too-slow.gif"),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
 
         match gif.rate {
             SourceRate::OutOfRange(wanted) => {
@@ -1045,7 +1148,7 @@ mod tests {
             "fixtures/test-anim-too-fast.gif",
             "fixtures/test-anim-too-slow.gif",
         ] {
-            let gif = load_gif_frames(Path::new(fixture), None).unwrap();
+            let gif = load_gif_frames(Path::new(fixture), None, &Adjustments::NONE).unwrap();
 
             // With no --fps the note is printed...
             assert!(
@@ -1084,7 +1187,8 @@ mod tests {
         )
         .unwrap();
 
-        let err = load_gif_frames(&path, None).expect_err("no frames must not succeed");
+        let err = load_gif_frames(&path, None, &Adjustments::NONE)
+            .expect_err("no frames must not succeed");
         let msg = err.to_string();
         assert!(
             msg.contains("as an animation"),
@@ -1100,7 +1204,12 @@ mod tests {
     /// the delays differ when all of them are identical.
     #[test]
     fn zero_delays_are_reported_as_unspecified_not_as_differing() {
-        let gif = load_gif_frames(Path::new("fixtures/test-anim-zero-delay.gif"), None).unwrap();
+        let gif = load_gif_frames(
+            Path::new("fixtures/test-anim-zero-delay.gif"),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(gif.rate, SourceRate::Unspecified);
         assert_eq!(gif.rate.or_default(), protocol::GIF_FPS_DEFAULT);
 
@@ -1121,7 +1230,12 @@ mod tests {
 
     #[test]
     fn gif_frames_encode_to_full_panel_frames_and_report_source_count() {
-        let gif = load_gif_frames(Path::new("fixtures/test-anim-2frames.gif"), None).unwrap();
+        let gif = load_gif_frames(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(gif.frames.len(), 2);
         assert_eq!(gif.source_count, 2);
         // 100 ms delays -> 10 fps, inside 1-60, so it becomes the default.
@@ -1136,16 +1250,25 @@ mod tests {
 
         let txt = dir.path().join("notes.txt");
         std::fs::write(&txt, b"not a gif").unwrap();
-        assert!(load_gif_frames(&txt, None).is_err());
+        assert!(load_gif_frames(&txt, None, &Adjustments::NONE).is_err());
 
         let empty = dir.path().join("empty.gif");
         std::fs::write(&empty, b"").unwrap();
-        assert!(load_gif_frames(&empty, None).is_err());
+        assert!(load_gif_frames(&empty, None, &Adjustments::NONE).is_err());
 
         // A PNG is a valid image but not a GIF.
-        assert!(load_gif_frames(Path::new("fixtures/test-quadrants.png"), None).is_err());
+        assert!(
+            load_gif_frames(
+                Path::new("fixtures/test-quadrants.png"),
+                None,
+                &Adjustments::NONE
+            )
+            .is_err()
+        );
 
-        let err = load_gif_frames(&txt, None).unwrap_err().to_string();
+        let err = load_gif_frames(&txt, None, &Adjustments::NONE)
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("keyboard was not contacted"),
             "must be clear the device was never opened: {err}"
@@ -1209,8 +1332,13 @@ mod tests {
     /// A plain GIF whose own rate is usable says exactly one thing, on stdout.
     #[test]
     fn a_usable_rate_produces_only_the_summary_note() {
-        let plan =
-            plan_gif_upload(Path::new("fixtures/test-anim-2frames.gif"), None, None).unwrap();
+        let plan = plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            None,
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(plan.rate, 10, "the file's own 10 fps is usable");
         assert_eq!(plan.notes.len(), 1, "no warning is due: {:?}", plan.notes);
         assert_eq!(plan.notes[0].stream, Stream::Stdout);
@@ -1232,7 +1360,7 @@ mod tests {
             ("fixtures/test-anim-zero-delay.gif", "as fast as possible"),
         ];
         for (fixture, expected) in cases {
-            let plan = plan_gif_upload(Path::new(fixture), None, None).unwrap();
+            let plan = plan_gif_upload(Path::new(fixture), None, None, &Adjustments::NONE).unwrap();
             assert_eq!(
                 plan.notes.len(),
                 2,
@@ -1268,7 +1396,8 @@ mod tests {
             "fixtures/test-anim-too-slow.gif",
             "fixtures/test-anim-zero-delay.gif",
         ] {
-            let plan = plan_gif_upload(Path::new(fixture), Some(24), None).unwrap();
+            let plan =
+                plan_gif_upload(Path::new(fixture), Some(24), None, &Adjustments::NONE).unwrap();
             assert_eq!(plan.rate, 24);
             assert_eq!(
                 plan.notes.len(),
@@ -1288,6 +1417,7 @@ mod tests {
             Path::new("fixtures/test-anim-18frames.gif"),
             Some(30),
             Some(NonZeroUsize::new(9).unwrap()),
+            &Adjustments::NONE,
         )
         .unwrap();
 
@@ -1314,8 +1444,13 @@ mod tests {
     /// message and a future progress bar cannot disagree.
     #[test]
     fn the_planner_owns_the_report_count_and_the_estimate() {
-        let plan =
-            plan_gif_upload(Path::new("fixtures/test-anim-18frames.gif"), Some(10), None).unwrap();
+        let plan = plan_gif_upload(
+            Path::new("fixtures/test-anim-18frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         assert_eq!(plan.total_reports, protocol::gif_upload_report_count(18));
         // Two slow pauses (frames 0 and 16) at 3 s, plus a second per frame.
         assert_eq!(plan.est_secs, 2 * 3 + 18);
@@ -1325,7 +1460,9 @@ mod tests {
     /// both on stdout.
     #[test]
     fn the_picture_planner_describes_the_upload_on_stdout() {
-        let plan = plan_picture_upload(Path::new("fixtures/test-quadrants.png")).unwrap();
+        let plan =
+            plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
         assert_eq!(plan.pixels.len(), protocol::PICTURE_BYTES);
         assert_eq!(plan.total_reports, protocol::picture_upload_report_count());
         assert_eq!(
@@ -1342,13 +1479,127 @@ mod tests {
     /// A bad file fails in the planner, before anything device-shaped exists.
     #[test]
     fn planning_a_broken_file_fails_without_touching_a_device() {
-        let err = plan_gif_upload(Path::new("fixtures/test-quadrants.png"), None, None)
-            .expect_err("a PNG is not a GIF");
+        let err = plan_gif_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            None,
+            None,
+            &Adjustments::NONE,
+        )
+        .expect_err("a PNG is not a GIF");
         let msg = err.to_string();
         assert!(msg.contains("as an animation"), "got: {msg}");
         assert!(
             msg.contains("The keyboard was not contacted."),
             "got: {msg}"
         );
+    }
+
+    // --- Milestone 6: adjustments on the encoder path ---
+
+    /// An unadjusted upload never enters the filter path at all.
+    ///
+    /// The whole milestone is worthless if adding the feature moves a pixel
+    /// for someone who never touches it. `is_identity` short-circuits before
+    /// any filter runs, so the bytes are the plain encode of the panel --
+    /// literally the same call the code made before adjustments existed.
+    ///
+    /// The end-to-end proof that this still matches real hardware is
+    /// `encoding_the_source_png_reproduces_the_whole_captured_upload`, which
+    /// compares against the captured upload and is unchanged by this
+    /// milestone.
+    #[test]
+    fn no_adjustments_means_the_plain_encode() {
+        let plan =
+            plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
+        assert_eq!(plan.pixels.len(), protocol::PICTURE_BYTES);
+        assert_eq!(
+            plan.pixels,
+            protocol::rgb565_encode(&plan.panel_rgba),
+            "identity must bypass the filters, not run a no-op chain through them"
+        );
+    }
+
+    /// The panel pixels are carried alongside, unadjusted, so the interface
+    /// can re-adjust from pristine data.
+    #[test]
+    fn plans_carry_the_unadjusted_panel_pixels() {
+        let plan =
+            plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
+        assert_eq!(
+            plan.panel_rgba.len(),
+            protocol::PANEL_W as usize * protocol::PANEL_H as usize * 4
+        );
+
+        let gif = plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
+        assert_eq!(gif.panel_rgba.len(), gif.frames.len());
+    }
+
+    /// Re-encoding pristine pixels with the same adjustments is the same
+    /// answer, which is what lets the interface preview and upload separately.
+    #[test]
+    fn adjust_and_encode_is_the_one_place_pixels_are_made() {
+        let adj = Adjustments {
+            brightness: 0.3,
+            grayscale: true,
+            ..Adjustments::NONE
+        };
+        let planned = plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &adj).unwrap();
+        let unadjusted =
+            plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap();
+
+        assert_ne!(
+            planned.pixels, unadjusted.pixels,
+            "the adjustment did something"
+        );
+        assert_eq!(
+            planned.pixels,
+            adjust_and_encode(&unadjusted.panel_rgba, &adj),
+            "and re-running it on the pristine pixels reproduces it exactly"
+        );
+    }
+
+    /// Adjustments reach every encoded GIF frame, not just the first.
+    #[test]
+    fn every_gif_frame_is_adjusted() {
+        let adj = Adjustments {
+            grayscale: true,
+            ..Adjustments::NONE
+        };
+        let plain = plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &Adjustments::NONE,
+        )
+        .unwrap();
+        let grey = plan_gif_upload(
+            Path::new("fixtures/test-anim-2frames.gif"),
+            Some(10),
+            None,
+            &adj,
+        )
+        .unwrap();
+
+        assert_eq!(grey.frames.len(), 2);
+        for i in 0..2 {
+            assert_ne!(
+                grey.frames[i], plain.frames[i],
+                "frame {i} was not adjusted"
+            );
+            assert_eq!(
+                grey.frames[i],
+                adjust_and_encode(&plain.panel_rgba[i], &adj),
+                "frame {i} does not match a direct re-encode"
+            );
+        }
     }
 }
