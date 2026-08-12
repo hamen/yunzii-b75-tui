@@ -189,8 +189,9 @@ impl Row {
     }
 }
 
-/// How far one arrow press moves a slider. The vendor's step.
-const ADJUST_STEP: f64 = 0.05;
+/// How far one arrow press moves a slider. The vendor's own step, so the
+/// reachable values are the same ones its UI produces.
+const ADJUST_STEP: f64 = 0.01;
 
 impl Pending {
     pub fn rows(&self) -> &'static [Row] {
@@ -212,25 +213,19 @@ impl Pending {
         }
     }
 
-    /// Re-encodes every frame from the pristine panel pixels.
+    /// Copies the chosen settings onto the plan, without doing the work.
     ///
-    /// Always from the originals, never on top of the last result, so moving a
-    /// slider back and forth returns exactly where it started instead of
-    /// accumulating rounding.
-    pub fn reencode_all(&mut self) {
+    /// The worker re-encodes. Doing all 160 frames here would freeze the
+    /// screen for as long as it took, which is exactly what the three-thread
+    /// split exists to prevent.
+    fn publish_adjustments(&mut self) {
         match self {
             Pending::Picture {
                 plan, adjustments, ..
-            } => {
-                plan.pixels = plan::adjust_and_encode(&plan.panel_rgba, adjustments);
-            }
+            } => plan.adjustments = *adjustments,
             Pending::Gif {
                 plan, adjustments, ..
-            } => {
-                for (out, src) in plan.frames.iter_mut().zip(plan.panel_rgba.iter()) {
-                    *out = plan::adjust_and_encode(src, adjustments);
-                }
-            }
+            } => plan.adjustments = *adjustments,
         }
     }
 
@@ -241,7 +236,12 @@ impl Pending {
     /// when the upload starts, on the worker.
     pub fn reencode_preview(&mut self) {
         match self {
-            Pending::Picture { .. } => self.reencode_all(),
+            Pending::Picture {
+                plan, adjustments, ..
+            } => {
+                plan.adjustments = *adjustments;
+                plan.reencode();
+            }
             Pending::Gif {
                 plan, adjustments, ..
             } => {
@@ -691,9 +691,10 @@ impl App {
                 else {
                     return None;
                 };
-                // Every frame, from the pristine pixels, so what was previewed
-                // is what goes out.
-                p.reencode_all();
+                // Hand the settings to the worker rather than applying them
+                // here: the preview frame is already right, and the rest is
+                // its job.
+                p.publish_adjustments();
                 match *p {
                     Pending::Picture { plan, .. } => Some(Job::UploadPicture(Box::new(plan))),
                     Pending::Gif {
@@ -1695,7 +1696,10 @@ mod tests {
         let Screen::Confirm(p) = &a.screen else {
             unreachable!()
         };
-        assert!((p.adjustments().brightness - 0.05).abs() < 1e-9);
+        assert!(
+            (p.adjustments().brightness - 0.01).abs() < 1e-9,
+            "one press is the vendor's own step"
+        );
 
         for _ in 0..100 {
             a.on_key(Key::Right);
@@ -1845,7 +1849,8 @@ mod tests {
         }
     }
 
-    /// Enter re-encodes every frame, not only the previewed one.
+    /// Enter hands the settings to the worker rather than doing 160 frames on
+    /// the drawing thread -- and the worker's re-encode reaches every frame.
     #[test]
     fn uploading_adjusts_all_the_frames() {
         let mut a = app_ready();
@@ -1866,7 +1871,13 @@ mod tests {
 
         let job = a.on_key(Key::Enter).expect("upload");
         match job {
-            Job::UploadGif(plan) => {
+            Job::UploadGif(mut plan) => {
+                assert!(
+                    plan.adjustments.grayscale,
+                    "the settings must travel with the job"
+                );
+                // What the worker does on receipt.
+                plan.reencode();
                 for (i, (got, was)) in plan.frames.iter().zip(plain.iter()).enumerate() {
                     assert_ne!(got, was, "frame {i} was left unadjusted");
                 }

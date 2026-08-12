@@ -478,6 +478,9 @@ pub struct PicturePlan {
     pub pixels: Vec<u8>,
     /// Panel-sized RGBA before adjustment; see `GifFrames::panel_rgba`.
     pub panel_rgba: Vec<u8>,
+    /// What `pixels` was encoded with. Changing it and calling `reencode`
+    /// is how the interface applies a new setting.
+    pub adjustments: Adjustments,
     pub total_reports: usize,
     pub notes: Vec<Note>,
 }
@@ -488,6 +491,8 @@ pub struct GifPlan {
     pub frames: Vec<Vec<u8>>,
     /// Panel-sized RGBA before adjustment, one per encoded frame.
     pub panel_rgba: Vec<Vec<u8>>,
+    /// What `frames` was encoded with; see `PicturePlan::adjustments`.
+    pub adjustments: Adjustments,
     pub rate: u8,
     /// Which of the vendor's three GIF modes to save into. Carried rather than
     /// hardcoded in the executor because it is a property of what was decided,
@@ -526,6 +531,7 @@ pub fn plan_picture_upload(
         ))],
         pixels,
         panel_rgba,
+        adjustments: *adjustments,
         total_reports,
     })
 }
@@ -536,6 +542,28 @@ pub fn plan_picture_upload(
 /// not own. The TUI adds its own guidance when it sees this, and a reworded
 /// message must not silently drop that.
 pub const TOO_MANY_FRAMES: &str = "more frames than the keyboard can store";
+
+impl PicturePlan {
+    /// Re-encodes from the pristine panel pixels with the current settings.
+    ///
+    /// Cheap for a picture -- one frame -- but it lives here beside the GIF
+    /// version so both front ends call the same thing.
+    pub fn reencode(&mut self) {
+        self.pixels = adjust_and_encode(&self.panel_rgba, &self.adjustments);
+    }
+}
+
+impl GifPlan {
+    /// Re-encodes every frame from the pristine panel pixels.
+    ///
+    /// Up to 160 frames through six filters, so this belongs on the worker
+    /// thread, never on the one drawing the screen.
+    pub fn reencode(&mut self) {
+        for (out, src) in self.frames.iter_mut().zip(self.panel_rgba.iter()) {
+            *out = adjust_and_encode(src, &self.adjustments);
+        }
+    }
+}
 
 /// Applies adjustments to one panel-sized RGBA frame and encodes it.
 ///
@@ -610,6 +638,7 @@ pub fn plan_gif_upload(
     Ok(GifPlan {
         frames: gif.frames,
         panel_rgba: gif.panel_rgba,
+        adjustments: *adjustments,
         rate,
         mode: protocol::GIF_MODE_SAVE_TO_DEVICE,
         source_count: gif.source_count,

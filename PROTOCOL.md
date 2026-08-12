@@ -739,15 +739,26 @@ frame rate. Milestone 4 implements them.
 
 ## What's next
 
-Milestones 1-4 ship `set-time`, `switch-page home`/`picture`/`gif`,
-`clear-picture`, `set-picture` and `set-gif` -- see `README.md`.
+Milestones 1-6 ship `set-time`, `switch-page home`/`picture`/`gif`,
+`clear-picture`, `set-picture`, `set-gif`, the `ratatui` interface this repo is
+named after, and the picture adjustments -- see `README.md`.
 
-What is left: the sliders and toggles (brightness, chroma, saturation,
-grayscale, "fuzzy", sharpening), the vendor's "in the middle" vs "cover up
-completely" placement setting, a `clear-gif` command if one exists, and the
-`ratatui` screen this repo is named after -- which is now worth building, since
-there are finally more actions than a flat CLI wants to carry.
+Two of those turned out not to need a discovery pass at all, and the pattern is
+worth noticing: **the sliders and toggles were never protocol** (see the
+section above), and `switch-page gif` had been correct since Milestone 2 while
+being blamed for a fault in how the GIF was *saved*. Reading the vendor's own
+source answered both faster than another capture session would have.
 
-Each still needs its own discovery pass, same process as this document. The
-generic opcode / checksum / report-structure model carries over directly; only
-the per-command payload layout differs.
+What is genuinely left:
+
+- The vendor's "in the middle" versus "cover up completely" placement setting.
+  Likely another client-side transform rather than a command; check the bundle
+  before capturing anything.
+- A `clear-gif` command, if one exists. Live capture showed the vendor's button
+  is structurally unrelated to `clear-picture`, and it is still undecoded.
+- GIF save modes 0 and 2, decoded but never exercised.
+- Whether `clear-picture` disturbs a stored GIF.
+
+The generic opcode / checksum / report-structure model carries over directly to
+anything that does turn out to be a command; only the per-command payload
+layout differs.

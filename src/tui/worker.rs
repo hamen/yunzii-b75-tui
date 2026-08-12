@@ -171,24 +171,32 @@ fn run_job(
                 notes,
             )
         })),
-        Job::UploadPicture(plan) => Some(upload(
-            tx,
-            ready,
-            "Uploading picture",
-            plan.total_reports,
-            None,
-            |cx| exec::execute_picture(&plan, cx),
-            "the picture may be partially written -- re-run it, or clear the picture",
-        )),
-        Job::UploadGif(plan) => Some(upload(
-            tx,
-            ready,
-            "Uploading GIF",
-            plan.total_reports,
-            Some(plan.est_secs),
-            |cx| exec::execute_gif(&plan, cx),
-            "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it",
-        )),
+        Job::UploadPicture(mut plan) => {
+            // The interface only ever re-encoded the frame it was showing;
+            // everything else is caught up here, off the drawing thread.
+            plan.reencode();
+            Some(upload(
+                tx,
+                ready,
+                "Uploading picture",
+                plan.total_reports,
+                None,
+                |cx| exec::execute_picture(&plan, cx),
+                "the picture may be partially written -- re-run it, or clear the picture",
+            ))
+        }
+        Job::UploadGif(mut plan) => {
+            plan.reencode();
+            Some(upload(
+                tx,
+                ready,
+                "Uploading GIF",
+                plan.total_reports,
+                Some(plan.est_secs),
+                |cx| exec::execute_gif(&plan, cx),
+                "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it",
+            ))
+        }
     }
 }
 
