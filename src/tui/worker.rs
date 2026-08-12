@@ -258,7 +258,7 @@ fn run_job(
                 plan.total_reports,
                 Some(plan.est_secs),
                 |cx| exec::execute_gif(&plan, cx),
-                "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it",
+                crate::GIF_PARTIAL_WRITE_NOTE,
             ))
         }
     }

@@ -555,7 +555,7 @@ fn run_upload(
 /// but it clears a GIF directly -- it does not answer whether clear-picture
 /// ALSO does, which stays untested). Named so the test asserts the same
 /// string the user sees.
-const GIF_PARTIAL_WRITE_NOTE: &str = "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it \
+pub(crate) const GIF_PARTIAL_WRITE_NOTE: &str = "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it \
      (clear-picture is not known to clear a GIF)";
 
 fn run_set_gif(

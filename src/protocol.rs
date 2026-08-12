@@ -69,9 +69,10 @@ pub const CMD15_INFO_PAYLOAD: [u8; 7] = [165, 90, 15, 0, 0, 195, 65];
 /// withheld it, believing the command did not visibly switch the panel.
 /// Milestone 3 found the real cause and it was not cmd15: the GIF under test
 /// had only ever been saved in the vendor's mode 0 ("set it as the startup
-/// animation"), which stores frames somewhere that never plays. Milestone 4
-/// implements the save that does (mode 1), which removed the last reason to
-/// keep the page switch hidden.
+/// animation"), which stores frames somewhere with no known way to make them
+/// play (the search hasn't been exhaustive). Milestone 4 implements the save
+/// that does (mode 1), which removed the last reason to keep the page switch
+/// hidden.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Home,
@@ -399,10 +400,13 @@ pub fn picture_upload_report_count() -> usize {
 /// | 2 | Save GIF to the device home page | 42 | 96x64 |
 ///
 /// Mode 0 is the trap that cost Milestone 2 a whole round of investigation: it
-/// stores the frames somewhere that never plays -- not on the GIF page, and
-/// not at power-up either (tested by replugging the keyboard). Mode 2's button
-/// renders only for product ID 12463; this keyboard is 12744. Neither is
-/// implemented or tested here.
+/// stores the frames somewhere with no known way to make them play -- not on
+/// the GIF page, and not at power-up either (tested by replugging the
+/// keyboard), though the search hasn't been exhaustive; genuinely unresolved,
+/// not "does nothing". Mode 2's button renders only for product ID 12463;
+/// this keyboard is 12744, so the button is simply absent -- untried on this
+/// hardware, not blocked by the wire (nothing enforces the product-ID check).
+/// Neither is implemented here.
 pub const GIF_MODE_SAVE_TO_DEVICE: u8 = 1;
 
 /// Frames the device will store in mode 1.
