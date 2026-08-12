@@ -229,6 +229,32 @@ fn the_subsampling_note_also_splits_correctly() {
     );
 }
 
+/// No subcommand, no terminal: exit rather than draw a UI nobody can see.
+///
+/// `Command::output()` gives the child pipes, not a terminal, so this is
+/// exactly the situation a script creates. Before the TUI existed this was a
+/// clap usage error; it must not become a program that hangs.
+#[test]
+fn without_a_terminal_the_bare_command_exits_instead_of_hanging() {
+    let out = run(&[]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the old usage-error exit code is kept"
+    );
+    let err = stderr(&out);
+    assert!(err.contains("not a terminal"), "got: {err}");
+    assert!(err.contains("--help"), "and points somewhere useful: {err}");
+}
+
+/// Every subcommand still works with piped stdio, exactly as before.
+#[test]
+fn subcommands_are_unaffected_by_the_new_interactive_mode() {
+    let out = run(&["set-gif", "fixtures/test-anim-2frames.gif", "--dry-run"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("dry run"));
+}
+
 /// `--help` works without a device and names every shipped command.
 #[test]
 fn help_lists_the_commands() {
