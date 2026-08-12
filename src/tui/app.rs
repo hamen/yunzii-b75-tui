@@ -1912,4 +1912,101 @@ mod tests {
             );
         }
     }
+
+    /// Every slider row maps to its own field, on both kinds of upload.
+    ///
+    /// The earlier test only moved GIF brightness, so chroma and saturation
+    /// could have been wired to the same field and nothing would have said so.
+    #[test]
+    fn each_slider_row_moves_its_own_value() {
+        let picture_plan = || {
+            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
+                .unwrap()
+        };
+
+        // (steps down from the top, which field it should move)
+        type ReadField = fn(&Adjustments) -> f64;
+        let gif_cases: [(usize, ReadField); 3] = [
+            (1, |a| a.brightness),
+            (2, |a| a.chroma),
+            (3, |a| a.saturation),
+        ];
+        for (steps, read) in gif_cases {
+            let mut a = app_ready();
+            a.screen = Screen::Confirm(Box::new(gif_pending()));
+            for _ in 0..steps {
+                a.on_key(Key::Down);
+            }
+            a.on_key(Key::Right);
+            let Screen::Confirm(p) = &a.screen else {
+                unreachable!()
+            };
+            let adj = p.adjustments();
+            assert!((read(adj) - 0.01).abs() < 1e-9, "row {steps} moved nothing");
+            // ...and only that one.
+            let total = adj.brightness.abs() + adj.chroma.abs() + adj.saturation.abs();
+            assert!(
+                (total - 0.01).abs() < 1e-9,
+                "row {steps} moved more than its own field: {adj:?}"
+            );
+        }
+
+        // A picture has no Rate row, so everything shifts up by one.
+        let picture_cases: [(usize, ReadField); 3] = [
+            (0, |a| a.brightness),
+            (1, |a| a.chroma),
+            (2, |a| a.saturation),
+        ];
+        for (steps, read) in picture_cases {
+            let mut a = app_ready();
+            a.screen = Screen::Confirm(Box::new(Pending::Picture {
+                path: PathBuf::from("p.png"),
+                plan: picture_plan(),
+                adjustments: Adjustments::NONE,
+                row: 0,
+            }));
+            for _ in 0..steps {
+                a.on_key(Key::Down);
+            }
+            a.on_key(Key::Left);
+            let Screen::Confirm(p) = &a.screen else {
+                unreachable!()
+            };
+            assert!(
+                (read(p.adjustments()) + 0.01).abs() < 1e-9,
+                "picture row {steps} moved nothing"
+            );
+        }
+    }
+
+    /// Every slider clamps, not just brightness, and on a picture too.
+    #[test]
+    fn every_slider_clamps_at_both_ends() {
+        for steps in 1..=3usize {
+            let mut a = app_ready();
+            a.screen = Screen::Confirm(Box::new(gif_pending()));
+            for _ in 0..steps {
+                a.on_key(Key::Down);
+            }
+            for _ in 0..250 {
+                a.on_key(Key::Right);
+            }
+            let Screen::Confirm(p) = &a.screen else {
+                unreachable!()
+            };
+            let adj = *p.adjustments();
+            let v = [adj.brightness, adj.chroma, adj.saturation][steps - 1];
+            assert_eq!(v, 1.0, "row {steps} did not stop at +1");
+
+            for _ in 0..500 {
+                a.on_key(Key::Left);
+            }
+            let Screen::Confirm(p) = &a.screen else {
+                unreachable!()
+            };
+            let adj = *p.adjustments();
+            let v = [adj.brightness, adj.chroma, adj.saturation][steps - 1];
+            assert_eq!(v, -1.0, "row {steps} did not stop at -1");
+        }
+    }
 }

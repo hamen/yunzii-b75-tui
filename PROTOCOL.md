@@ -680,7 +680,21 @@ rather than assumed:
   twenty-one times per axis with `globalAlpha` compositing and a
   `Math.random()` jitter per pass. It is not reproducible outside a browser and
   not deterministic inside one. Same situation as the GIF frame resampling
-  recorded above, and the same answer: a documented Gaussian instead.
+  recorded above, and the same answer: a documented Gaussian instead, specified
+  here so it is as pinned as the vendor's own filters:
+
+  | | |
+  |---|---|
+  | Kernel | `[0.06136, 0.24477, 0.38774, 0.24477, 0.06136]` — sigma 1.0 sampled at −2..2, normalised to 1.0, written as literals rather than derived |
+  | Passes | separable: horizontal, then vertical |
+  | Edges | clamp to edge. Not zero padding, which darkens the border — a visible frame around a 160×96 image |
+  | Channels | RGB only; alpha untouched |
+  | Rounding | `f64` throughout, one clamped round per pass, so two in total |
+
+  A fully transparent pixel is blackened before any spatial filter runs. Its
+  RGB is never displayed — the encoder turns alpha 0 into black — but a blur
+  would otherwise sample that hidden colour and smear it into neighbours that
+  *are* displayed.
 - **Nothing writes alpha.** Matching fabric for GIFs (already flattened, so the
   kernel returns 255), and deliberately not for pictures, where alpha decides
   which pixels the encoder blackens.

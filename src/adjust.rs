@@ -97,6 +97,19 @@ impl Adjustments {
         if self.is_identity() {
             return;
         }
+        // A fully transparent pixel still carries RGB, and the encoder is
+        // about to turn it black anyway. Left alone, the two spatial filters
+        // would sample that hidden colour and smear it into visible
+        // neighbours -- transparent red beside opaque black comes out
+        // pink after a blur. Blacken it first, which is what the encoder
+        // would have done, so the filters only ever see what will be shown.
+        for px in img.pixels_mut() {
+            if px[3] == 0 {
+                px[0] = 0;
+                px[1] = 0;
+                px[2] = 0;
+            }
+        }
         if self.brightness != 0.0 {
             brightness(img, self.brightness);
         }
@@ -765,5 +778,35 @@ mod tests {
             reversed.as_raw(),
             "the two orders must be distinguishable, or the test proves nothing"
         );
+    }
+
+    /// A transparent pixel must not leak its hidden colour into its visible
+    /// neighbours.
+    ///
+    /// The encoder turns alpha 0 into black, so the colour underneath is
+    /// never displayed -- but a spatial filter would happily sample it and
+    /// spread it into pixels that *are* displayed. Transparent red beside
+    /// opaque black would come out pink.
+    #[test]
+    fn a_transparent_pixel_does_not_bleed_into_its_neighbours() {
+        let mut i = RgbaImage::new(3, 1);
+        i.put_pixel(0, 0, Rgba([255, 0, 0, 0])); // invisible red
+        i.put_pixel(1, 0, Rgba([0, 0, 0, 255])); // visible black
+        i.put_pixel(2, 0, Rgba([0, 0, 0, 255]));
+
+        Adjustments {
+            blur: true,
+            ..Adjustments::NONE
+        }
+        .apply(&mut i);
+
+        assert_eq!(
+            i.get_pixel(1, 0).0[0],
+            0,
+            "the hidden red must not reach a visible pixel"
+        );
+        // And the transparent pixel keeps its alpha, so the encoder still
+        // knows to blacken it.
+        assert_eq!(i.get_pixel(0, 0).0[3], 0);
     }
 }
