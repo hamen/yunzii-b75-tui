@@ -135,6 +135,8 @@ enum Commands {
     /// Clear the currently-displayed picture. Whether this also affects a
     /// separately-stored GIF is still untested (see PROTOCOL.md).
     ClearPicture,
+    /// Clear the stored GIF animation.
+    ClearGif,
     /// Upload a PNG or JPEG to the TFT screen.
     ///
     /// The image is stretched to the panel's fixed 160x96 with
@@ -301,6 +303,7 @@ fn main() {
         Commands::SetTime { debug_no_prefix } => run_set_time(debug_no_prefix).map_err(Into::into),
         Commands::SwitchPage { page } => run_switch_page(page.into()).map_err(Into::into),
         Commands::ClearPicture => run_clear_picture().map_err(Into::into),
+        Commands::ClearGif => run_clear_gif().map_err(Into::into),
         Commands::SetPicture {
             path,
             dry_run,
@@ -450,6 +453,24 @@ fn run_clear_picture() -> Result<(), DeviceError> {
     Ok(())
 }
 
+fn run_clear_gif() -> Result<(), DeviceError> {
+    let path = device::find_device()?;
+    println!("found device: {}", path.display());
+
+    let dev = Device::open(&path)?;
+    dev.drain().map_err(|e| e.with_reconnect_hint(&path))?;
+
+    let sequence = protocol::build_clear_gif_sequence();
+    println!("built {} reports (cmd18 pair + cmd19 pair)", sequence.len());
+
+    dev.send_sequence(ReportIdForm::LeadingZeroOnWrite, &sequence, &mut |m| {
+        eprintln!("{m}")
+    })
+    .map_err(|e| e.with_reconnect_hint(&path))?;
+    println!("sent successfully. Check the keyboard's TFT screen -- the GIF should be cleared.");
+    Ok(())
+}
+
 /// Runs an upload for the CLI: no cancellation source, notes to stderr.
 ///
 /// The CLI has no key to press and PR A adds no signal handler, so the flag is
@@ -481,8 +502,10 @@ fn run_upload(
 /// What a failed or cancelled GIF upload leaves on the keyboard.
 ///
 /// Deliberately NOT set-picture's message: nothing shows that clear-picture
-/// clears a half-written GIF, and there is no clear-gif command yet. Named so
-/// the test asserts the same string the user sees.
+/// clears a half-written GIF (a `clear-gif` command ships as of Milestone 7,
+/// but it clears a GIF directly -- it does not answer whether clear-picture
+/// ALSO does, which stays untested). Named so the test asserts the same
+/// string the user sees.
 const GIF_PARTIAL_WRITE_NOTE: &str = "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it \
      (clear-picture is not known to clear a GIF)";
 
@@ -525,7 +548,7 @@ fn run_set_gif(
         .map_err(|e| AppError::Device(e.with_reconnect_hint(&dev_path)))?;
 
     // Deliberately NOT set-picture's message: nothing shows that clear-picture
-    // clears a half-written GIF, and there is no clear-gif command yet.
+    // clears a half-written GIF (see GIF_PARTIAL_WRITE_NOTE's doc comment).
     run_upload(
         &dev,
         &dev_path,
@@ -855,6 +878,26 @@ mod cli_tests {
         assert_eq!(
             sequence[0][CMD_BYTE_OFFSET], 14,
             "expected inner cmd byte 14"
+        );
+    }
+
+    // --- Milestone 7: clear-gif ---
+
+    #[test]
+    fn parses_clear_gif() {
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "clear-gif"]).unwrap();
+        assert!(matches!(cli.command.unwrap(), Commands::ClearGif));
+    }
+
+    #[test]
+    fn clear_gif_dispatch_produces_cmd18() {
+        const CMD_BYTE_OFFSET: usize = 9;
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "clear-gif"]).unwrap();
+        assert!(matches!(cli.command.unwrap(), Commands::ClearGif));
+        let sequence = protocol::build_clear_gif_sequence();
+        assert_eq!(
+            sequence[0][CMD_BYTE_OFFSET], 18,
+            "expected inner cmd byte 18"
         );
     }
 

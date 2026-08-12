@@ -226,6 +226,45 @@ pub fn build_clear_picture_sequence() -> Vec<[u8; 64]> {
     reports
 }
 
+// --- Milestone 7: clear-gif ---
+
+/// The cmd-18 half of "Clear GIF", captured live (2026-08-12) via a hook on
+/// `HIDDevice.prototype.sendReport`/`sendFeatureReport` and confirmed
+/// deterministic across 3 independent captures. Does NOT match
+/// `gif_session_payload(18, ...)`'s shape (length nibble 1, not 2; trailer
+/// `[5, 16, 1, 0]`, not the `[4, 80]` open/close constant) -- a distinct
+/// vendor payload that happens to share the cmd=18 number, sent as an
+/// info-package (0x40) same as `cmd18_gifSession`'s OPEN form, but
+/// structurally unrelated to it. Checksum (bytes 4-5 of the built report)
+/// verified by hand: 64+0+0+9+(165+90+18+0+1+5+16+1+0) = 369 = 0x0171.
+const CMD18_CLEAR_GIF_PAYLOAD: [u8; 9] = [165, 90, 18, 0, 1, 5, 16, 1, 0];
+
+/// The cmd-19 half of "Clear GIF", captured alongside cmd18 above. Byte-
+/// identical to `gif_session_payload(19, [196, 1], GIF_MODE_SAVE_TO_DEVICE,
+/// 0)` -- almost certainly coincidental vendor reuse, not a documented
+/// relationship, so this ships as its own literal constant rather than a
+/// call into `gif_session_payload()` (a future change to the session-open
+/// encoding must not silently change clear-gif too). Checksum verified by
+/// hand: 64+0+0+9+(165+90+19+0+2+196+1+1+0) = 547 = 0x0223.
+const CMD19_CLEAR_GIF_PAYLOAD: [u8; 9] = [165, 90, 19, 0, 2, 196, 1, 1, 0];
+
+/// The full "Clear GIF" sequence: two DIFFERENT `infoPackage(0x40) ->
+/// finish(0x42)` pairs, no repeat loop (unlike `clear-picture`'s 16x).
+/// Live capture (both out-report bytes and the device's real in-report
+/// ACKs) shows no meaningful delay between any of the 4 reports (0-7ms,
+/// ordinary HID round-trip time) -- unlike picture-upload's 300ms pause or
+/// GIF-upload's 30ms/3000ms host sleeps, so no artificial delay is added
+/// here; `Device::send_sequence`'s existing per-report ACK-wait is enough,
+/// the same pacing `build_page_switch_sequence` already uses.
+pub fn build_clear_gif_sequence() -> Vec<[u8; 64]> {
+    vec![
+        build_info_package(&CMD18_CLEAR_GIF_PAYLOAD),
+        build_finish(),
+        build_info_package(&CMD19_CLEAR_GIF_PAYLOAD),
+        build_finish(),
+    ]
+}
+
 // --- Milestone 3: picture upload ---
 
 /// The TFT panel's fixed pixel size. Confirmed two ways: the pixel stream is
@@ -817,6 +856,52 @@ mod tests {
                 "repeat {repeat}'s info-package must be byte-identical to repeat 0's"
             );
         }
+    }
+
+    // --- Milestone 7: clear-gif (cmd18 + cmd19, no repeat loop) ---
+
+    fn clear_gif_fixture(command_name: &str) -> [u8; 64] {
+        load_fixture_report_from(
+            include_str!("../fixtures/clear-gif.json"),
+            "clear-gif.json",
+            command_name,
+        )
+    }
+
+    #[test]
+    fn build_clear_gif_sequence_is_exactly_cmd18_then_cmd19_info_finish_pairs() {
+        let seq = build_clear_gif_sequence();
+        assert_eq!(seq.len(), 4, "cmd18 pair + cmd19 pair, no repeat loop");
+        assert_eq!(
+            seq[0],
+            clear_gif_fixture("cmd18-clear-gif-infoPackage"),
+            "report 0 must be cmd18's info-package"
+        );
+        assert_eq!(
+            seq[1],
+            clear_gif_fixture("cmd18-clear-gif-finish"),
+            "report 1 must be cmd18's finish"
+        );
+        assert_eq!(
+            seq[2],
+            clear_gif_fixture("cmd19-clear-gif-infoPackage"),
+            "report 2 must be cmd19's info-package"
+        );
+        assert_eq!(
+            seq[3],
+            clear_gif_fixture("cmd19-clear-gif-finish"),
+            "report 3 must be cmd19's finish"
+        );
+    }
+
+    #[test]
+    fn clear_gif_cmd18_and_cmd19_have_different_payloads() {
+        // The two halves are NOT the same payload repeated -- guards against
+        // a copy-paste of clear-picture's single-payload-repeated shape.
+        assert_ne!(
+            CMD18_CLEAR_GIF_PAYLOAD, CMD19_CLEAR_GIF_PAYLOAD,
+            "clear-gif's two info-packages must carry different payloads"
+        );
     }
 
     // --- Milestone 3: picture upload (cmd16 / cmd12 / bulk / finish) ---

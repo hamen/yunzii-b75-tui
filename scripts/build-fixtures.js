@@ -267,6 +267,56 @@ for (const [name, obj] of [['page-switch', pageSwitch], ['clear-picture', clearP
   console.log(`wrote fixtures/${name}.json`);
 }
 
+// --- Milestone 7: clear-gif (cmd18 + cmd19, two DIFFERENT infoPackage->finish
+// pairs, no repeat loop) ---
+//
+// Unlike page-switch (one payload per button, 3 buttons) or clear-picture
+// (one payload, repeated 16x), "Clear GIF" is TWO different payloads sent
+// once each. The ACKs here are constructed via withAckFlip, same convention
+// as page-switch/clear-picture -- but this command's raw evidence file
+// (fixtures/raw/cap-clear-gif-hidlog.json) carries REAL captured ACKs, not
+// flip-derived ones, and check-raw-consistency.js compares this polished
+// fixture against those real bytes directly, so the flip assumption is
+// independently checked here, not just asserted.
+const CLEAR_GIF_CMD18 = { cmd: 18, name: 'clear-gif', payload: [165, 90, 18, 0, 1, 5, 16, 1, 0], checksum: [0x71, 0x01] };
+const CLEAR_GIF_CMD19 = { cmd: 19, name: 'clear-gif', payload: [165, 90, 19, 0, 2, 196, 1, 1, 0], checksum: [0x23, 0x02] };
+
+function buildClearGifFixture() {
+  const reports = [];
+  function push(commandIndex, commandName, opcode, direction, bytes) {
+    reports.push({
+      transaction_id: 'clear-gif',
+      command_index: commandIndex,
+      command_name: commandName,
+      fragment_index: 0,
+      opcode_hex: '0x' + opcode.toString(16).padStart(2, '0'),
+      direction,
+      hid_method: direction === 'in' ? 'input-report' : 'output-report',
+      report_id: 0,
+      payload_hex: toHexBytes(bytes),
+    });
+  }
+  [CLEAR_GIF_CMD18, CLEAR_GIF_CMD19].forEach(({ cmd, name, payload, checksum }, i) => {
+    const infoOut = infoPackageOut(payload, checksum);
+    push(i, `cmd${cmd}-${name}-infoPackage`, 0x40, 'out', infoOut);
+    push(i, `cmd${cmd}-${name}-infoPackage-ACK`, 0x40, 'in', withAckFlip(infoOut));
+    push(i, `cmd${cmd}-${name}-finish`, 0x42, 'out', FINISH_OUT);
+    push(i, `cmd${cmd}-${name}-finish-ACK`, 0x42, 'in', FINISH_ACK);
+  });
+  return {
+    transaction_id: 'clear-gif',
+    connection_mode: 'usb-cable',
+    interface_identity: cap1.interface_identity,
+    browser: 'Chrome (claude-in-chrome automation)',
+    note: 'The "Clear GIF" button, Equipment setup tab, captured live this session (2026-08-12). 4 out-reports: cmd18\'s infoPackage+finish, then cmd19\'s infoPackage+finish -- no repeat loop, unlike clear-picture\'s 16x. Deterministic across 3 independent capture attempts. See fixtures/raw/cap-clear-gif-hidlog.json for the real captured ACKs and inter-report timing (0-7ms gaps, no deliberate vendor pause).',
+    reports,
+  };
+}
+
+const clearGif = buildClearGifFixture();
+fs.writeFileSync(path.join(__dirname, '..', 'fixtures', 'clear-gif.json'), JSON.stringify(clearGif, null, 2) + '\n');
+console.log('wrote fixtures/clear-gif.json');
+
 // --- Milestone 3: picture upload (cmd16 start, cmd12 declare-size, bulk, finish) ---
 //
 // This fixture is built DIFFERENTLY from every one above, on purpose.

@@ -362,6 +362,7 @@ fn help_lists_the_commands() {
         "set-time",
         "switch-page",
         "clear-picture",
+        "clear-gif",
         "set-picture",
         "set-gif",
     ] {

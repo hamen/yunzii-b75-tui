@@ -1,0 +1,106 @@
+{
+  "transaction_id": "clear-gif",
+  "connection_mode": "usb-cable",
+  "interface_identity": {
+    "vendor_id_hex": "0x28E9",
+    "product_id_hex": "0x31C8",
+    "product_name": "YUNZII B75 PRO MAX Keyboard",
+    "webhid_device_index": 2,
+    "usage_page_hex": "0xFF60",
+    "usage_hex": "0x61",
+    "serial": null,
+    "note": "webhid_device_index is machine/session-specific noise, NOT a stable identifier -- re-enumerate by usage_page_hex+usage_hex at runtime. Linux-side sysfs report-descriptor bytes/hash and USB topology were NOT captured this phase -- not reachable from browser JS; deferred to the Milestone 1 implementation phase where sysfs is actually reachable."
+  },
+  "browser": "Chrome (claude-in-chrome automation)",
+  "note": "The \"Clear GIF\" button, Equipment setup tab, captured live this session (2026-08-12). 4 out-reports: cmd18's infoPackage+finish, then cmd19's infoPackage+finish -- no repeat loop, unlike clear-picture's 16x. Deterministic across 3 independent capture attempts. See fixtures/raw/cap-clear-gif-hidlog.json for the real captured ACKs and inter-report timing (0-7ms gaps, no deliberate vendor pause).",
+  "reports": [
+    {
+      "transaction_id": "clear-gif",
+      "command_index": 0,
+      "command_name": "cmd18-clear-gif-infoPackage",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 09 71 01 00 a5 5a 12 00 01 05 10 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "clear-gif",
+      "command_index": 0,
+      "command_name": "cmd18-clear-gif-infoPackage-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 09 71 01 55 a5 5a 12 00 01 05 10 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "clear-gif",
+      "command_index": 0,
+      "command_name": "cmd18-clear-gif-finish",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "clear-gif",
+      "command_index": 0,
+      "command_name": "cmd18-clear-gif-finish-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "clear-gif",
+      "command_index": 1,
+      "command_name": "cmd19-clear-gif-infoPackage",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 09 23 02 00 a5 5a 13 00 02 c4 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "clear-gif",
+      "command_index": 1,
+      "command_name": "cmd19-clear-gif-infoPackage-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x40",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "40 00 00 09 23 02 55 a5 5a 13 00 02 c4 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "clear-gif",
+      "command_index": 1,
+      "command_name": "cmd19-clear-gif-finish",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "out",
+      "hid_method": "output-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "transaction_id": "clear-gif",
+      "command_index": 1,
+      "command_name": "cmd19-clear-gif-finish-ACK",
+      "fragment_index": 0,
+      "opcode_hex": "0x42",
+      "direction": "in",
+      "hid_method": "input-report",
+      "report_id": 0,
+      "payload_hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    }
+  ]
+}

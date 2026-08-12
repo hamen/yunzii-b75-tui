@@ -134,6 +134,60 @@ for (const file of fixtureFiles) {
       } else if (known) {
         okDetail(`${label}: info-package payload matches declared constant`);
       }
+
+      // 5b'. Milestone 7's clear-gif shares cmd18/19 numbers with cmd18_gifSession's
+      //      OPEN form (also sent as 0x40, per fields.json's "OPCODE QUIRK" note),
+      //      so a single "known constant" arm above can't cover cmd18 -- it needs
+      //      two different check shapes, picked by the length-nibble byte
+      //      (payload[4]): 1 = clear-gif's fixed 9-byte payload, 2 = gif-session's
+      //      7-byte prefix + a 2-byte variable trailer. cmd19 needs no such
+      //      branching: gif_session_payload's cmd19 half is ALWAYS a data packet
+      //      (0x41) in both open and close (see 5d below), never an info-package,
+      //      so a 0x40 cmd19 can only be clear-gif's.
+      if (cmdByte === 18) {
+        if (payload[4] === 1) {
+          const known18 = fields.commands.cmd18_clearGif.infoPackagePayload.value;
+          if (JSON.stringify(payload) !== JSON.stringify(known18)) {
+            fail(`${label}: cmd18 (clear-gif shape) payload ${JSON.stringify(payload)} != declared constant ${JSON.stringify(known18)}`);
+          } else {
+            okDetail(`${label}: cmd18 (clear-gif shape) payload matches declared constant`);
+          }
+        } else if (payload[4] === 2) {
+          const prefix = fields.commands.cmd18_gifSession.dataPacketPayload.prefix;
+          const gotPrefix = payload.slice(0, prefix.length);
+          if (JSON.stringify(gotPrefix) !== JSON.stringify(prefix)) {
+            fail(`${label}: cmd18 (gif-session shape) prefix ${JSON.stringify(gotPrefix)} != declared ${JSON.stringify(prefix)}`);
+          } else if (payload.length !== prefix.length + 2) {
+            fail(`${label}: cmd18 (gif-session shape) expected a 2-byte trailer, payload is ${payload.length} bytes`);
+          } else if (payload[7] !== 1) {
+            fail(`${label}: cmd18 (gif-session shape) only mode 1 ("save to the device") is shipped, got mode ${payload[7]}`);
+          } else if (payload[8] !== 0) {
+            // A 0x40 cmd18 can only be the OPEN half -- gif_session_close's cmd18
+            // is a 0x41 data packet (the "OPCODE QUIRK"), so the trailing byte
+            // here is always 0 (frameCount is only ever nonzero on the close half).
+            fail(`${label}: cmd18 (gif-session shape, open half) expected trailing byte 0, got ${payload[8]}`);
+          } else {
+            okDetail(`${label}: cmd18 (gif-session open shape) prefix, mode, and trailing byte all match`);
+          }
+        } else {
+          fail(`${label}: cmd18 has unrecognised length nibble payload[4]=${payload[4]}, expected 1 (clear-gif) or 2 (gif-session)`);
+        }
+      }
+      if (cmdByte === 19) {
+        // cmd19 is never a 0x40 info-package in gif_session_payload (both
+        // open and close send it as a 0x41 data packet -- see 5d below), so
+        // ANY 0x40 cmd19 can only be clear-gif's, unconditionally: no
+        // length-nibble branch needed here (unlike cmd18, whose OPEN half
+        // genuinely is a 0x40 info-package too). clear-gif's own cmd19
+        // constant happens to have length nibble 2, same as gif-session's
+        // shape -- opcode is what disambiguates, not payload[4].
+        const known19 = fields.commands.cmd19_clearGif.infoPackagePayload.value;
+        if (JSON.stringify(payload) !== JSON.stringify(known19)) {
+          fail(`${label}: cmd19 (0x40, can only be clear-gif) payload ${JSON.stringify(payload)} != declared constant ${JSON.stringify(known19)}`);
+        } else {
+          okDetail(`${label}: cmd19 (0x40, clear-gif) payload matches declared constant`);
+        }
+      }
     }
 
     // 5d. Milestone 4's GIF commands are 0x41 data packets whose payloads end

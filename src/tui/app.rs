@@ -64,17 +64,19 @@ pub enum Action {
     ShowPicture,
     ShowGif,
     ClearPicture,
+    ClearGif,
     UploadPicture,
     UploadGif,
 }
 
 impl Action {
-    pub const ALL: [Action; 7] = [
+    pub const ALL: [Action; 8] = [
         Action::SetTime,
         Action::ShowHome,
         Action::ShowPicture,
         Action::ShowGif,
         Action::ClearPicture,
+        Action::ClearGif,
         Action::UploadPicture,
         Action::UploadGif,
     ];
@@ -86,6 +88,7 @@ impl Action {
             Action::ShowPicture => "Show picture page",
             Action::ShowGif => "Show GIF page",
             Action::ClearPicture => "Clear picture",
+            Action::ClearGif => "Clear GIF",
             Action::UploadPicture => "Upload picture…",
             Action::UploadGif => "Upload GIF…",
         }
@@ -315,6 +318,7 @@ pub enum Job {
     SetTime,
     SwitchPage(Page),
     ClearPicture,
+    ClearGif,
     UploadPicture(Box<PicturePlan>),
     UploadGif(Box<GifPlan>),
 }
@@ -520,6 +524,7 @@ impl App {
                     Action::ShowPicture => Some(Job::SwitchPage(Page::Picture)),
                     Action::ShowGif => Some(Job::SwitchPage(Page::Gif)),
                     Action::ClearPicture => Some(Job::ClearPicture),
+                    Action::ClearGif => Some(Job::ClearGif),
                     Action::UploadPicture | Action::UploadGif => {
                         self.open_browser(action == Action::UploadGif);
                         None
@@ -992,6 +997,7 @@ mod tests {
             (Action::ShowPicture, "SwitchPage(Picture)"),
             (Action::ShowGif, "SwitchPage(Gif)"),
             (Action::ClearPicture, "ClearPicture"),
+            (Action::ClearGif, "ClearGif"),
         ];
         for (action, expected) in cases {
             let mut a = app_ready();
