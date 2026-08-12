@@ -123,6 +123,12 @@ sudo usermod -aG plugdev "$USER"   # only if the node stays root-only; needs re-
 
 ### 🎨 `set-picture`
 
+> ⚠️ **Breaking change (Milestone 7):** the default fit changed from an
+> undocumented, always-on stretch to `--placement contain` (scale-to-fit,
+> padded black). Any source that isn't already 160×96 (or 5:3) now produces
+> **different pixels** than before with no flag change. Pass
+> `--placement fill` explicitly to keep the old stretch-to-cover behaviour.
+
 Takes a **PNG or JPEG**. The panel is a fixed **160×96**, and `--placement`
 decides how the image fills it:
 
@@ -238,11 +244,11 @@ usually sharper than the vendor's.
 
 ### 🧹 `clear-gif`
 
-Clears the stored GIF animation. Decoded from a live capture of the vendor's
-own "Clear GIF" button (Equipment setup tab): 4 reports, two different
-`infoPackage(0x40) -> finish(0x42)` pairs (cmd18 then cmd19), no repeat loop
-— structurally unrelated to `clear-picture` despite the vendor's own internal
-naming suggesting otherwise (see `PROTOCOL.md`). No `--dry-run`, same as
+Sends the vendor's decoded "Clear GIF" bytes. Decoded from a live capture of
+the vendor's own "Clear GIF" button (Equipment setup tab): 4 reports, two
+different `infoPackage(0x40) -> finish(0x42)` pairs (cmd18 then cmd19), no
+repeat loop — structurally unrelated to `clear-picture` despite the vendor's
+own internal naming suggesting otherwise (see `PROTOCOL.md`). No `--dry-run`, same as
 `clear-picture`.
 
 The device ACKing all 4 reports proves it accepted them; it does not by

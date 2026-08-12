@@ -160,16 +160,23 @@ enum Commands {
     /// Clear the currently-displayed picture. Whether this also affects a
     /// separately-stored GIF is still untested (see PROTOCOL.md).
     ClearPicture,
-    /// Clear the stored GIF animation.
+    /// Send the vendor's decoded "Clear GIF" bytes.
+    ///
+    /// The device ACKs all 4 reports, which proves it accepted them -- it
+    /// does not by itself prove the stored animation is erased rather than
+    /// the live display just clearing (see PROTOCOL.md for the pending
+    /// hardware check).
     ClearGif,
     /// Upload a PNG or JPEG to the TFT screen.
     ///
     /// The image is fit into the panel's fixed 160x96 per `--placement`
     /// (default `contain`, matching the vendor's own default -- scales to
-    /// fit, padded with black; `fill` stretches to cover the whole panel
-    /// with `imageSmoothingEnabled = false`-equivalent (nearest-neighbour)
-    /// sampling, matching the vendor's real picture-save handler for that
-    /// case, aspect ratio not preserved). Fully transparent pixels become
+    /// fit, padded with black; `fill` stretches to exactly fill the whole
+    /// panel with `imageSmoothingEnabled = false`-equivalent
+    /// (nearest-neighbour) sampling, matching the vendor's real
+    /// picture-save handler for that case, aspect ratio not preserved --
+    /// despite the vendor's own UI calling this option "Cover up
+    /// completely", it is a plain stretch, not a crop). Fully transparent pixels become
     /// black; partial transparency keeps its full colour rather than
     /// blending. EXIF orientation is applied, so photos straight off a
     /// phone are not uploaded sideways. Uploading also switches the panel
@@ -505,7 +512,11 @@ fn run_clear_gif() -> Result<(), DeviceError> {
         eprintln!("{m}")
     })
     .map_err(|e| e.with_reconnect_hint(&path))?;
-    println!("sent successfully. Check the keyboard's TFT screen -- the GIF should be cleared.");
+    println!(
+        "sent successfully. The device acknowledged all 4 reports -- check the keyboard's TFT \
+         screen; whether this actually erases the stored animation (vs. just clearing the live \
+         display) is not yet independently confirmed (see PROTOCOL.md)."
+    );
     Ok(())
 }
 
@@ -559,6 +570,7 @@ fn run_set_gif(
     // while for a long GIF, and discovering a bad file after 500 writes would
     // leave a half-written animation on the panel for no reason.
     println!("reading {}...", path.display());
+    println!("placement: {placement}");
     if let Some(s) = adjustments.summary() {
         println!("adjustments: {s}");
     }
@@ -619,6 +631,7 @@ fn run_set_picture(
     // should say so, not fail with "device not found" on a machine with no
     // keyboard plugged in.
     let plan = plan::plan_picture_upload(path, placement, adjustments)?;
+    println!("placement: {placement}");
     if let Some(s) = adjustments.summary() {
         println!("adjustments: {s}");
     }

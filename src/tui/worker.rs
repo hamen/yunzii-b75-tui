@@ -223,13 +223,18 @@ fn run_job(
                 notes,
             )
         })),
-        Job::ClearGif => Some(simple(tx, ready, "cleared the GIF", |dev, notes| {
-            dev.send_sequence(
-                ReportIdForm::LeadingZeroOnWrite,
-                &protocol::build_clear_gif_sequence(),
-                notes,
-            )
-        })),
+        Job::ClearGif => Some(simple(
+            tx,
+            ready,
+            "sent clear-gif (erasure not yet independently confirmed)",
+            |dev, notes| {
+                dev.send_sequence(
+                    ReportIdForm::LeadingZeroOnWrite,
+                    &protocol::build_clear_gif_sequence(),
+                    notes,
+                )
+            },
+        )),
         Job::UploadPicture(mut plan) => {
             // The interface only ever re-encoded the frame it was showing;
             // everything else is caught up here, off the drawing thread.
@@ -534,6 +539,26 @@ mod tests {
                 assert_eq!(plan.frames[0].len(), crate::protocol::PICTURE_BYTES);
             }
             other => panic!("expected a GIF, got {other:?}"),
+        }
+    }
+
+    /// The first load (`Job::Preview`, both kinds) starts at `Placement::default()`
+    /// (`Contain`) -- the same default the CLI now uses, not the old implicit
+    /// always-`Fill`.
+    #[test]
+    fn a_first_preview_starts_at_the_default_placement() {
+        let gif = build_preview(std::path::Path::new("fixtures/test-anim-2frames.gif"), true)
+            .expect("a valid GIF");
+        match gif {
+            Pending::Gif { plan, .. } => assert_eq!(plan.placement, plan::Placement::Contain),
+            other => panic!("expected a GIF, got {other:?}"),
+        }
+
+        let picture = build_preview(std::path::Path::new("fixtures/test-quadrants.png"), false)
+            .expect("a valid picture");
+        match picture {
+            Pending::Picture { plan, .. } => assert_eq!(plan.placement, plan::Placement::Contain),
+            other => panic!("expected a picture, got {other:?}"),
         }
     }
 

@@ -2189,6 +2189,36 @@ mod tests {
         assert!(a.replan_pending);
     }
 
+    /// The GIF-only test above proves the mechanism; this proves it also
+    /// works on the picture path, which has its own `plan_picture_upload`
+    /// call and no `Rate` row ahead of `Placement`.
+    #[test]
+    fn space_on_placement_dispatches_a_replan_for_a_picture_too() {
+        let plan = plan::plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
+        let mut a = app_ready();
+        a.screen = Screen::Confirm(Box::new(Pending::Picture {
+            path: PathBuf::from("p.png"),
+            plan,
+            adjustments: Adjustments::NONE,
+            row: 0, // Placement is row 0 for a picture -- no Rate row ahead of it
+        }));
+        let job = a.on_key(Key::Char(' ')).expect("a replan job");
+        match job {
+            Job::Replan {
+                placement, for_gif, ..
+            } => {
+                assert_eq!(placement, Placement::Contain);
+                assert!(!for_gif, "a picture's replan must say for_gif: false");
+            }
+            other => panic!("expected Job::Replan, got {other:?}"),
+        }
+    }
+
     #[test]
     fn replan_pending_blocks_every_mutating_key_but_not_esc() {
         let mut a = app_ready();

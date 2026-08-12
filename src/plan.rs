@@ -102,6 +102,15 @@ pub enum Placement {
     Fill,
 }
 
+impl std::fmt::Display for Placement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Placement::Contain => "contain",
+            Placement::Fill => "fill",
+        })
+    }
+}
+
 /// Blackens the RGB of every fully-transparent (`alpha == 0`) pixel before a
 /// spatial resize, so hidden colour can't leak into a resized neighbour under
 /// `Contain`'s `Lanczos3` filter (which treats R/G/B/A as independent
@@ -122,26 +131,14 @@ fn blacken_transparent(img: &mut image::RgbaImage) {
     }
 }
 
-/// Fits `img` into the panel per `placement`, returning panel-sized RGBA.
-///
-/// `Fill`: unchanged from before Milestone 7 -- `resize_exact` with
-/// `FilterType::Nearest`. See the two call sites below for what this filter
-/// choice matches (or doesn't) on each path; the claim differs by path and
-/// belongs there, not here.
-///
-/// `Contain`: scale to fit inside the panel preserving aspect ratio,
-/// centred, padded with opaque black -- computed once at panel resolution,
-/// not the vendor's real 3x-then-1.5x-then-1x staged resolution (see
-/// `Placement`'s own doc comment). All four of `dst_w`/`dst_h`/`dst_x`/
-/// `dst_y` are rounded independently from unrounded intermediates via
-/// `js_round` (JS `Math.round` semantics), matching the *shape* of the
-/// vendor's own four independent `Math.round` calls even though the
-/// resolution they're computed at differs. `FilterType::Lanczos3` is our own
-/// high-quality choice, not a vendor-matched one.
 /// `Contain`'s geometry alone, extracted from `resize_to_panel` so it's
 /// directly testable against hand-computed values without decoding an
-/// image. All four rounded independently from unrounded intermediates via
-/// `js_round`, per `resize_to_panel`'s own doc comment.
+/// image. All four of `dst_w`/`dst_h`/`dst_x`/`dst_y` are rounded
+/// independently from unrounded intermediates via `js_round` (JS
+/// `Math.round` semantics), matching the *shape* of the vendor's own four
+/// independent `Math.round` calls -- see `resize_to_panel`'s own doc
+/// comment for why the resolution they're computed at differs from the
+/// vendor's.
 fn contain_geometry(src_w: u32, src_h: u32) -> (u32, u32, u32, u32) {
     let (src_w, src_h) = (src_w as f64, src_h as f64);
     let scale = (protocol::PANEL_W as f64 / src_w).min(protocol::PANEL_H as f64 / src_h);
@@ -154,6 +151,19 @@ fn contain_geometry(src_w: u32, src_h: u32) -> (u32, u32, u32, u32) {
     (dst_x, dst_y, dst_w, dst_h)
 }
 
+/// Fits `img` into the panel per `placement`, returning panel-sized RGBA.
+///
+/// `Fill`: unchanged from before Milestone 7 -- `resize_exact` with
+/// `FilterType::Nearest`. See the two call sites below for what this filter
+/// choice matches (or doesn't) on each path; the claim differs by path and
+/// belongs there, not here.
+///
+/// `Contain`: scale to fit inside the panel preserving aspect ratio,
+/// centred, padded with opaque black -- computed once at panel resolution,
+/// not the vendor's real 3x-then-1.5x-then-1x staged resolution (see
+/// `Placement`'s own doc comment). Geometry itself lives in
+/// `contain_geometry`, above. `FilterType::Lanczos3` is our own
+/// high-quality choice, not a vendor-matched one.
 fn resize_to_panel(img: &image::DynamicImage, placement: Placement) -> Vec<u8> {
     match placement {
         Placement::Fill => img

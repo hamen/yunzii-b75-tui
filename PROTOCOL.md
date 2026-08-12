@@ -813,7 +813,7 @@ code, same geometry formula) as this tool's own internally consistent
 implementation of the feature -- not because the picture-side vendor
 mechanism has been separately verified to compute the same geometry.
 
-## `clear-gif` -- resolved (Milestone 7)
+## `clear-gif` -- wire format resolved, functional effect NOT yet confirmed (Milestone 7)
 
 Decoded from a live capture (hook on `HIDDevice.prototype.sendReport`/
 `sendFeatureReport` for the outbound bytes, the device's own `inputreport`
