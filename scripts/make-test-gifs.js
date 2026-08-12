@@ -331,6 +331,26 @@ const built = [];
   built.push([name, n, 'uniform 1500 ms -> 0.67 fps, below the floor']);
 }
 
+// 7. No frame delay at all -- "as fast as possible".
+//    Every delay is 0, so they are uniform but do not express a rate. Folding
+//    this into the variable case made the warning claim the delays differed
+//    when all of them were identical.
+{
+  const W = 32;
+  const H = 32;
+  const name = 'test-anim-zero-delay.gif';
+  const n = writeGif(path.join(FIX, name), {
+    width: W,
+    height: H,
+    palette: PALETTE,
+    frames: [
+      { left: 0, top: 0, width: W, height: H, indices: solid(W, H, 1), delayCs: 0, disposal: 1 },
+      { left: 0, top: 0, width: W, height: H, indices: solid(W, H, 2), delayCs: 0, disposal: 1 },
+    ],
+  });
+  built.push([name, n, 'no delay -> as fast as possible']);
+}
+
 for (const [name, size, why] of built) {
   console.log(`  wrote fixtures/${name}  (${size} bytes) -- ${why}`);
 }

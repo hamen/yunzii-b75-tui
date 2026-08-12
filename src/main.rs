@@ -176,8 +176,10 @@ enum Commands {
     SetGif {
         /// Path to a GIF file.
         path: PathBuf,
-        /// Frames per second, 1-60. Defaults to the GIF's own rate when its
-        /// frame delays are uniform, otherwise 30.
+        /// Frames per second, 1-60. Without it, the GIF's own rate is used
+        /// when its frame delays are uniform AND inside 1-60. Otherwise the
+        /// upload falls back to 30 fps and prints why: the delays vary, they
+        /// are all zero, or they ask for a rate the keyboard cannot store.
         #[arg(long, value_parser = parse_fps)]
         fps: Option<u8>,
         /// Upload at most this many frames, 1-160, sampled evenly across the
@@ -408,6 +410,13 @@ enum SourceRate {
     /// Delays differ between frames. The device animates at a single rate, so
     /// this cannot be reproduced exactly. Carries the mean delay in ms.
     Variable { mean_delay_ms: f64 },
+    /// Every frame delay is zero -- "as fast as the viewer can manage", which
+    /// is common and is not a rate at all.
+    ///
+    /// Its own arm because folding it into `Variable` made the warning say the
+    /// delays "differ" when every one of them is identical. The fallback rate
+    /// is the same; the sentence was simply false.
+    Unspecified,
 }
 
 impl SourceRate {
@@ -437,6 +446,10 @@ impl SourceRate {
                 },
                 protocol::GIF_FPS_MIN,
                 protocol::GIF_FPS_MAX
+            )),
+            SourceRate::Unspecified => Some(format!(
+                "note: this GIF sets no frame delay, so it asks to play as fast as possible. \
+                 The keyboard animates at a fixed rate. Using {chosen} fps."
             )),
             SourceRate::Variable { mean_delay_ms } => Some(format!(
                 "note: this GIF's frames have different delays (averaging {mean_delay_ms:.0} ms, \
@@ -519,8 +532,9 @@ fn load_gif_frames(path: &Path, max_frames: Option<NonZeroUsize>) -> Result<GifF
 
     // A zero delay is "as fast as possible", which is not a rate the file is
     // actually asking for, so it is treated as variable rather than as 0 fps.
-    let uniform = all_equal && first_delay > 0;
-    let rate = if uniform {
+    let rate = if all_equal && first_delay == 0 {
+        SourceRate::Unspecified
+    } else if all_equal {
         // Range-check the exact rate, then round. Rounding first was a bug: a
         // uniform 1500 ms delay is 0.67 fps, which the device cannot store,
         // but it rounded to 1 and passed the check as if the file had asked
@@ -1441,6 +1455,29 @@ mod cli_tests {
         assert!(
             Cli::try_parse_from(["yunzii-b75-tui", "set-gif", "a.gif", "--fps", "60"]).is_ok(),
             "60 fps is the limit itself"
+        );
+    }
+
+    /// Every delay zero is uniform, not variable, and the note must not claim
+    /// the delays differ when all of them are identical.
+    #[test]
+    fn zero_delays_are_reported_as_unspecified_not_as_differing() {
+        let gif = load_gif_frames(Path::new("fixtures/test-anim-zero-delay.gif"), None).unwrap();
+        assert_eq!(gif.rate, SourceRate::Unspecified);
+        assert_eq!(gif.rate.or_default(), protocol::GIF_FPS_DEFAULT);
+
+        let why = gif
+            .rate
+            .fallback_reason(protocol::GIF_FPS_DEFAULT)
+            .expect("a zero-delay GIF still falls back, so it must say so");
+        assert!(
+            !why.contains("different delays"),
+            "every delay is 0 -- they are identical, not different; got: {why}"
+        );
+        assert!(why.contains("as fast as possible"), "got: {why}");
+        assert!(
+            why.contains("30 fps"),
+            "must name the rate used; got: {why}"
         );
     }
 

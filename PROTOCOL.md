@@ -331,9 +331,9 @@ accepted only `home`/`picture`, and `gif` was filed as a named, evidenced
 `unresolved` entry for a later milestone to pick up once the missing
 operation was found.
 
-**Current state, and the end of this thread: Milestone 4 found the missing
-operation.** It was the *save*, not the switch — the GIF had to be stored in
-mode 1. `set-gif` and `switch-page gif` both ship, the `unresolved` entry is
+**Current state, and the end of this thread: the missing operation was found
+while preparing Milestone 3, and Milestone 4 shipped it.** It was the *save*,
+not the switch — the GIF had to be stored in mode 1. `set-gif` and `switch-page gif` both ship, the `unresolved` entry is
 gone, and cmd15 needed no change of any kind. Nothing above this line
 describes how the tool behaves today; it is kept because the reasoning, and
 the way it reached a confident wrong answer, is worth more than the verdict
