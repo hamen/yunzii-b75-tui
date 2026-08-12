@@ -127,7 +127,7 @@ sudo usermod -aG plugdev "$USER"   # only if the node stays root-only; needs re-
 > undocumented, always-on stretch to `--placement contain` (scale-to-fit,
 > padded black). Any source that isn't already 160×96 (or 5:3) now produces
 > **different pixels** than before with no flag change. Pass
-> `--placement fill` explicitly to keep the old stretch-to-cover behaviour.
+> `--placement fill` explicitly to keep the old stretch-to-fill behaviour.
 
 Takes a **PNG or JPEG**. The panel is a fixed **160×96**, and `--placement`
 decides how the image fills it:
@@ -135,7 +135,7 @@ decides how the image fills it:
 - **`contain`** (the default, matching the vendor's own default): scales the
   image to fit inside the panel, aspect ratio preserved, centred, with the
   leftover padded **black**.
-- **`fill`**: stretches the image to exactly cover the panel with
+- **`fill`**: stretches the image to exactly fill the panel with
   nearest-neighbour sampling — the same as the vendor's tool, which draws
   with image smoothing switched off. **Aspect ratio is not preserved.**
 

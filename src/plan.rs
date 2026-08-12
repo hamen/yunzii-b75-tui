@@ -1009,6 +1009,25 @@ mod tests {
         assert_eq!(&pixels[0..2], &[0xf8, 0x00]);
     }
 
+    /// The picture path's equivalent of `every_gif_frame_respects_the_selected_placement`
+    /// -- `Contain` and `Fill` must produce different encoded bytes for a
+    /// non-160x96, non-5:3-aspect source, or `set-picture`'s `--placement`
+    /// flag isn't actually reaching `load_and_encode_picture`.
+    #[test]
+    fn plan_picture_upload_produces_different_bytes_for_contain_and_fill() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wrong-size.png");
+        image::RgbImage::from_pixel(37, 211, image::Rgb([255, 0, 0]))
+            .save(&path)
+            .unwrap();
+        let contain = plan_picture_upload(&path, Placement::Contain, &Adjustments::NONE).unwrap();
+        let fill = plan_picture_upload(&path, Placement::Fill, &Adjustments::NONE).unwrap();
+        assert_ne!(
+            contain.pixels, fill.pixels,
+            "a 37x211 source into a 160x96 panel must differ between Contain and Fill"
+        );
+    }
+
     // --- Milestone 7: placement ---
 
     #[test]
