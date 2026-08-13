@@ -947,6 +947,79 @@ confirmation that mode 2 targets a different physical screen (consistent
 with its vendor-UI gate on product ID 12463, this keyboard is 12744, see
 above).
 
+## The picture path's own placement -- mechanism decoded, resampling quality still open (Milestone 7 follow-up)
+
+Milestone 7 confirmed `Ut()` is GIF-only and left the picture path's own
+first-stage rendering (source onto its 320×192 editor canvas, where
+placement is presumably decided) explicitly untraced. It is a different
+mechanism, not a variant of `Ut()`, and it is now fully read.
+
+**Stage 1 -- on image upload**, `fabric.Image.fromURL`'s callback computes
+fit scale against the *editor* canvas (320×192, i.e. `panel*2` -- a plain
+fabric.js `Canvas`, not a raw pixel buffer):
+
+```js
+xe = round2(editorWidth  / image.width)    // fit-width ratio, ROUNDED FIRST
+ve = round2(editorHeight / image.height)   // fit-height ratio, ROUNDED FIRST
+re = Math.min(xe, ve)                      // the "contain" scale factor
+T === "0"                          // "0" = "in the middle" (contain), same
+                                    // encoding and same default as the GIF
+                                    // path's placement state
+  ? image.scale(re), center via left/top = (editorDim - imageDim*re) / 2
+  : image.set({ scaleX: xe, scaleY: ve, left: 0, top: 0 })  // "1" = stretch
+```
+
+Each ratio is rounded to 2 decimal places with `.toFixed(2)` **before**
+`Math.min`, so contain does NOT always produce an exact edge-to-edge fit
+on either axis, only an approximate one. Concrete example: a 3840×2160
+source against the 320×192 editor canvas gives `xe = round(320/3840) =
+round(0.0833) = 0.08` and `ve = round(192/2160) = round(0.0889) = 0.09`;
+`re = min(0.08, 0.09) = 0.08`, so the placed image is `3840*0.08 =
+307.2` × `2160*0.08 = 172.8` -- neither dimension touches its editor-canvas
+edge exactly, including the width axis that's nominally the "fit" one.
+Rounding error is small at realistic source sizes but the algorithm is
+approximate by construction, not exact.
+
+Same shape as `Ut()`'s two branches (contain-fit-and-center vs. plain
+stretch), but a genuinely different implementation: a fabric.js *object
+transform* (scale + position properties on the image, each ratio rounded
+to 2 decimal places as shown above, unlike `Ut()`'s exact float math),
+not a pixel-level canvas draw. `y.current` (the fabric `Canvas`
+this transform lives on) wraps the SAME DOM element as `L.current` (stage
+2's raw draw source below) -- fabric's `Canvas` constructor takes
+`L.current` directly and sets no smoothing option of its own (see
+`vendor-source-excerpt.js`). What that construction does NOT show is
+whether fabric.js sets any 2D-context smoothing flag internally when it
+renders the transform -- so the exact resampling quality of stage 1's
+render is **not independently confirmed** by this reading, only that no
+explicit nearest-neighbour override appears anywhere in the reviewed
+source. Two small helper functions, `G()` (recompute contain) and `I()`
+(recompute stretch), re-run this same math whenever the placement toggle
+or any adjustment slider changes, keeping the object's transform in sync
+with the current state.
+
+**Stage 2 -- on save**, already documented and already correctly matched by
+this repo: draw the 320×192 editor canvas down to a fresh 160×96 canvas
+with `imageSmoothingEnabled = false` (real nearest-neighbour 2x downscale),
+`getImageData`, and pack with `te()` (RGB565, truncate, no dither, no alpha
+handling at all -- confirmed again from this same read, matching
+`rgb565_encode`'s existing doc comment exactly).
+
+This mostly closes the gap: the picture path's placement DECISION is made
+entirely in stage 1 as a vector transform, at full editor resolution,
+independent of stage 2's pixel-level downscale -- there is no missing
+stage-1 pixel PLACEMENT algorithm to match, because stage 1 never touches
+pixels for that purpose. What stays open, narrowly, is the resampling
+quality of fabric's own render of that transform (see above) -- unlike
+the placement mechanism itself, this is not settled by the source alone.
+This repo's own `Contain`/`Fill` (`src/plan.rs`, Milestone 7) already do
+the equivalent computation in a single geometry pass at panel resolution
+rather than at 2x-then-downscale -- closer in *spirit* to this picture-path
+algorithm (one `Math.min`-based fit, then center-or-stretch) than to
+`Ut()`'s 3x-supersampled staged resize, though still not byte-exact to
+either, for the same "vendor-inspired, not vendor-exact" reason recorded
+in Milestone 7's placement section above.
+
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
 **Resolved** — every transmit-required field for "Update device time": HID op
@@ -1051,10 +1124,13 @@ What is genuinely left:
   anymore, a product decision: GIFs from this tool will show more banding
   and less post-resize sharpening than the vendor's own upload until this
   is implemented, or the gap is accepted as-is.
-- The picture path's fabric.js first-stage rendering (source onto its
-  320×192 canvas, where placement is presumably decided) -- traced only as
-  far as the SECOND stage (see above); the first stage's own placement
-  mechanism and resampling quality remain unconfirmed.
+- **The picture path's first-stage fabric.js rendering** (source onto its
+  320×192 canvas) is now mostly decoded too (see above): the placement
+  DECISION is a fabric object transform, not a pixel algorithm, settling
+  the main question. What stays open, narrowly: the exact resampling
+  quality of fabric's own render of that transform -- the source shows no
+  explicit smoothing override, but doesn't show fabric's internal
+  behaviour either, so this is not fully confirmed either way.
 
 The generic opcode / checksum / report-structure model carries over directly to
 anything that does turn out to be a command; only the per-command payload

@@ -54,6 +54,43 @@
 // vendor's own simpler 3-tap scheme in the same directional shape:
 //   function wn(Ie){const et=Ie.data,Fe=Ie.width,ke=Ie.height,st=new Uint16Array(Fe*ke),ut=new Array(Fe*ke*3).fill(0);for(let le=0;le<ke;le++)for(let me=0;me<Fe;me++){const Ee=(le*Fe+me)*4,Be=(le*Fe+me)*3;let nt=Math.max(0,Math.min(255,et[Ee]+ut[Be])),xt=Math.max(0,Math.min(255,et[Ee+1]+ut[Be+1])),Kt=Math.max(0,Math.min(255,et[Ee+2]+ut[Be+2]));const ft=Math.min(31,Math.round(nt/255*31)),Dt=Math.min(63,Math.round(xt/255*63)),pt=Math.min(31,Math.round(Kt/255*31)),mt=nt-ft*255/31,yt=xt-Dt*255/63,Nt=Kt-pt*255/31;me<Fe-1&&(ut[Be+3]+=mt*2/4,ut[Be+4]+=yt*2/4,ut[Be+5]+=Nt*2/4),le<ke-1&&(me>0&&(ut[Be+Fe*3-3]+=mt*1/4,ut[Be+Fe*3-2]+=yt*1/4,ut[Be+Fe*3-1]+=Nt*1/4),ut[Be+Fe*3]+=mt*1/4,ut[Be+Fe*3+1]+=yt*1/4,ut[Be+Fe*3+2]+=Nt*1/4),st[le*Fe+me]=ft<<11|Dt<<5|pt}return st}
 
+// The fabric.js editor Canvas construction, verbatim (offset 2148238),
+// showing HOW `y.current` (used by Q/I/G below) and `L.current` (the raw
+// canvas stage 2 later reads via `drawImage`, see below) relate: fabric's
+// `Canvas` constructor WRAPS the existing `L.current` DOM element rather
+// than creating a separate one, and passes no smoothing option of its own
+// -- so `y.current` and `L.current` are two references into the same
+// underlying canvas, but this excerpt does not show whether fabric.js
+// sets any 2D-context smoothing flag internally at render time. The
+// PLACEMENT MECHANISM below (transform, not pixel algorithm) is settled
+// by this evidence; the exact resampling quality of fabric's own render
+// of that transform is NOT independently confirmed by anything quoted
+// here, and PROTOCOL.md says so explicitly:
+//   j.useEffect(()=>{if(!L.current)return;const J=new jn.fabric.Canvas(L.current,{width:t*2,height:n*2});return y.current=J,()=>{J.dispose()}},[t,n])
+
+// Picture path's own placement, verbatim (offset 2143061 of this same
+// fetch). `Q`'s callback runs on image upload; `T` is a useState string
+// ("0"/"1", same encoding and default "0" as the GIF path's `D`), `P` is
+// its setter, `y.current` is the fabric.js editor Canvas (320x192, i.e.
+// panel*2) constructed just above:
+//   Q=async J=>{const ae=y.current;ae&&jn.fabric.Image.fromURL(J,oe=>{const he=ae.getWidth(),pe=ae.getHeight(),xe=oe.width?Number((he/oe.width).toFixed(2)):1,ve=oe.height?Number((pe/oe.height).toFixed(2)):1,re=Math.min(xe,ve);T==="0"?(oe.scale(re),oe.set({left:oe.width?Number(((he-oe.width*re)/2).toFixed(2)):0,top:oe.height?Number(((pe-oe.height*re)/2).toFixed(2)):0,selectable:!1,evented:!1,hasControls:!1,hasBorders:!1,lockRotation:!0})):oe.set({left:0,top:0,scaleX:xe,scaleY:ve,selectable:!1,evented:!1,hasControls:!1,hasBorders:!1,lockRotation:!0}),ae.clear(),ae.add(oe),ae.renderAll()},{crossOrigin:"anonymous"})}
+
+// Contain/stretch re-layout, re-run whenever the placement toggle or any
+// adjustment slider changes (`T==="0"?G():I()` appears after every filter
+// mutation in this component), verbatim (offset 2145155 for I, 2145441
+// for G -- both immediately follow Q above, in that order, in the fetched
+// bundle):
+//   I=async()=>{const J=y.current;if(!J)return;J.getObjects().forEach(oe=>{const he=J.getWidth(),pe=J.getHeight(),xe=oe.width?Number((he/oe.width).toFixed(2)):1,ve=oe.height?Number((pe/oe.height).toFixed(2)):1;oe.set({left:0,top:0,scaleX:xe,scaleY:ve}),J.clear(),J.add(oe),J.renderAll()})}
+//   G=()=>{const J=y.current;if(!J)return;J.getObjects().forEach(oe=>{const he=J.getWidth(),pe=J.getHeight(),xe=oe.width?Number((he/oe.width).toFixed(2)):1,ve=oe.height?Number((pe/oe.height).toFixed(2)):1,re=Math.min(xe,ve);oe.scale(re),oe.set({left:oe.width?Number(((he-oe.width*re)/2).toFixed(2)):0,top:oe.height?Number(((pe-oe.height*re)/2).toFixed(2)):0}),J.clear(),J.add(oe),J.renderAll()})}
+
+// Picture save (stage 2, already resolved in Milestone 3 -- shown here
+// only to make the two-stage pipeline explicit in one place), verbatim
+// (offset 2147456 for X, 2147233 for te -- te is defined immediately
+// before X in the fetched bundle), including `te()`, the picture path's
+// RGB565 packer:
+//   function te(J){const ae=J.data,oe=new Uint16Array(J.width*J.height);for(let he=0,pe=0;he<ae.length;he+=4,pe++){const xe=ae[he],ve=ae[he+1],re=ae[he+2],we=xe>>3,De=ve>>2,Te=re>>3,Ue=we<<11|De<<5|Te;oe[pe]=Ue}return oe}
+//   X=async()=>{if(y.current){O(!0);const ae=document.createElement("canvas");ae.width=t,ae.height=n;const oe=ae.getContext("2d");if(oe){oe.imageSmoothingEnabled=!1,oe.drawImage(L.current,0,0,t,n);const he=oe.getImageData(0,0,t,n),pe=te(he), ...
+
 // =====================================================================
 // DEMINIFIED (readability aid only -- not verbatim evidence; see above
 // for the actual source text this is derived from)
