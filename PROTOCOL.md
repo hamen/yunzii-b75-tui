@@ -813,7 +813,7 @@ code, same geometry formula) as this tool's own internally consistent
 implementation of the feature -- not because the picture-side vendor
 mechanism has been separately verified to compute the same geometry.
 
-## `clear-gif` -- wire format resolved, functional effect NOT yet confirmed (Milestone 7)
+## `clear-gif` -- wire format AND erasure both resolved (Milestone 7, confirmed on hardware 2026-08-13)
 
 Decoded from a live capture (hook on `HIDDevice.prototype.sendReport`/
 `sendFeatureReport` for the outbound bytes, the device's own `inputreport`
@@ -855,18 +855,36 @@ round-trip time) -- unlike picture-upload's 300ms pause or GIF-upload's
 30ms/3000ms host sleeps. `build_clear_gif_sequence()` needs no artificial
 delay of its own.
 
-**What this evidence does and does not prove.** The device ACKing all 4
-reports proves it accepted them. It does not prove they erase the stored
-GIF -- this repo has already been burned by exactly that gap once
-(`switch-page gif`'s cmd15 bytes were correct and ACKed from Milestone 2
-onward, but the command was believed broken for two milestones because
-nobody had separately confirmed what the ACK couldn't tell them). The
-visual check -- save a GIF, confirm it plays, run `clear-gif`, confirm the
-panel goes blank, **then physically disconnect and reconnect the keyboard**
-and confirm the old GIF does not come back -- is a pre-merge gate for this
-command, tracked separately; until it passes, treat `clear-gif` as
-"captured, decoded, ACKed -- not yet confirmed to persist across a
-reconnect".
+### Erasure confirmed on hardware (2026-08-13)
+
+The ACKs alone never proved erasure -- this repo had already been burned by
+exactly that gap once (`switch-page gif`'s cmd15 bytes were correct and
+ACKed from Milestone 2 onward, but the command was believed broken for two
+milestones because nobody had separately confirmed what the ACK couldn't
+tell them). So the check was run on the real keyboard, **with a control**,
+because the first half on its own is not conclusive:
+
+| | GIF uploaded (mode 1), then... | after replug, `switch-page gif` shows |
+|---|---|---|
+| **test** | `clear-gif`, then replug | nothing (home clock) |
+| **control** | replug only, no `clear-gif` | **the GIF, playing** |
+
+The two runs differ by exactly one command, so the erasure is real and
+`clear-gif` is **resolved**: it erases stored GIF data, not just the live
+display.
+
+The control is what makes this conclusive, and it is worth keeping in mind
+for any future test on this device: an empty GIF page and a `switch-page`
+that silently did nothing **look identical on screen** (both leave the
+panel on the home clock). Without the control run, the test half alone
+would have been the Milestone 2 mistake again, in the opposite direction.
+
+**Second finding, from the control itself:** a mode-1 GIF **survives a
+power cycle**. Unplugging and replugging returns the panel to the home
+page, but the animation is still stored, and `switch-page gif` replays it.
+Only mode 0's non-persistence had ever been tested (see the mode table
+above); mode 1's persistence was assumed, never checked, and is now
+confirmed.
 
 ## The GIF-save post-process (`pn`/`Vr`/`wn`) -- decoded, not protocol, not implemented (Milestone 7 follow-up)
 
@@ -1045,8 +1063,10 @@ frame-rate byte. `switch-page gif` ships too; it was correct all along.
 
 **As of Milestone 7**: the "Location" placement setting sends no HID (see
 above), same as Milestone 6's sliders; `clear-gif`'s bytes (cmd18/cmd19, a
-new pair distinct from the GIF session pair) are decoded, checksummed, and
-confirmed deterministic; GIF save mode 2 closes as resolved-N/A (the
+new pair distinct from the GIF session pair) are decoded, checksummed,
+confirmed deterministic, AND confirmed on hardware to genuinely erase the
+stored GIF -- verified against a control run, see above; GIF save mode 2
+closes as resolved-N/A (the
 vendor's own UI doesn't offer it for this product, see below); the
 `pn`/`Vr`/`wn` GIF-save post-process is fully decoded (edge-aware denoise,
 a second edge-aware sharpen pass, and error-diffusion dithering (Floyd-
@@ -1063,9 +1083,7 @@ this); GIF save mode 0, decoded but with no known way to make it play (the
 search hasn't been exhaustive); whether sending mode-2-formatted bytes to
 THIS keyboard (untried, not blocked by the wire) does anything -- confirming
 the vendor's *intended* mode-2 behavior would need a product-ID-12463 unit;
-`clear-gif`'s functional effect (erasure vs. just clearing the live display)
--- captured and ACKed, not yet visually confirmed across a reconnect; the
-2.4 GHz dongle and Bluetooth connection modes; any connect/init traffic before
+the 2.4 GHz dongle and Bluetooth connection modes; any connect/init traffic before
 the first command; WHETHER to implement the vendor's `pn`/`Vr`/`wn` GIF-save
 post-process (decoded in full below -- denoise, a second sharpen pass, and
 RGB565 dithering, none matched by this repo's GIF path today) -- a product
@@ -1105,10 +1123,6 @@ another capture session would have.
 
 What is genuinely left:
 
-- **`clear-gif`'s functional effect** (erasure vs. just clearing the live
-  display) -- captured, decoded, and ACKed, but the visual reconnect check
-  (see above) hasn't run yet. A pre-merge gate on this specific command, not
-  a "someday" item.
 - **GIF save mode 0** -- stores data, no known way to make it play, search
   not exhaustive. Genuinely unresolved, not "does nothing".
 - **GIF save mode 2 on THIS keyboard** -- the vendor's own UI doesn't offer

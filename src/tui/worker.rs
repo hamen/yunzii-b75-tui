@@ -223,18 +223,13 @@ fn run_job(
                 notes,
             )
         })),
-        Job::ClearGif => Some(simple(
-            tx,
-            ready,
-            "sent clear-gif (erasure not yet independently confirmed)",
-            |dev, notes| {
-                dev.send_sequence(
-                    ReportIdForm::LeadingZeroOnWrite,
-                    &protocol::build_clear_gif_sequence(),
-                    notes,
-                )
-            },
-        )),
+        Job::ClearGif => Some(simple(tx, ready, "cleared the stored GIF", |dev, notes| {
+            dev.send_sequence(
+                ReportIdForm::LeadingZeroOnWrite,
+                &protocol::build_clear_gif_sequence(),
+                notes,
+            )
+        })),
         Job::UploadPicture(mut plan) => {
             // The interface only ever re-encoded the frame it was showing;
             // everything else is caught up here, off the drawing thread.

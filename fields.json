@@ -504,7 +504,8 @@
         "cmd19_clearGif"
       ],
       "shape": "4 reports: cmd18's infoPackage(0x40) -> finish(0x42), then cmd19's infoPackage(0x40) -> finish(0x42) -- two DIFFERENT payloads, no repeat loop (unlike clear-picture's 16x). No deliberate delay between any of the 4 reports (0-7ms gaps observed, ordinary HID round-trip time) -- unlike picture-upload's 300ms pause or GIF-upload's host sleeps.",
-      "resolvedBy": "Milestone 7, live HID capture (real device ACKs, not flip-derived), 3 independent captures confirmed deterministic, 2026-08-12."
+      "resolvedBy": "Milestone 7, live HID capture (real device ACKs, not flip-derived), 3 independent captures confirmed deterministic, 2026-08-12.",
+      "erasureConfirmed": "Confirmed on real hardware 2026-08-13, against a control run. Test: upload GIF (mode 1) -> clear-gif -> replug -> switch-page gif shows nothing (home clock). Control: upload GIF (mode 1) -> replug -> switch-page gif shows the GIF playing. The runs differ by exactly one command, so clear-gif erases stored data, not just the live display. The control is what makes this conclusive: an empty GIF page and a switch-page that silently did nothing look IDENTICAL on screen (both leave the panel on the home clock), which is the same ambiguity that made Milestone 2 wrongly blame cmd15."
     },
     "pictureUpload": {
       "commands": [
@@ -543,7 +544,7 @@
       },
       "modes": {
         "0": "Set it as the startup animation. Max 64 frames, 160x96. Stores frames somewhere with no known way to make them play -- not on the GIF page, and not at power-up (tested by replugging), though the search hasn't been exhaustive. This is what misled Milestone 2 into believing cmd15 was broken. NOT implemented.",
-        "1": "Save to the device. Max 160 frames, 160x96. The mode that actually displays. THIS IS WHAT WE SHIP.",
+        "1": "Save to the device. Max 160 frames, 160x96. The mode that actually displays. THIS IS WHAT WE SHIP. Confirmed on hardware 2026-08-13 to SURVIVE a power cycle: after unplug/replug the panel returns to the home page, but the animation is still stored and switch-page gif replays it. (Only mode 0's non-persistence had ever been tested before.)",
         "2": "Save GIF to the device home page. Max 42 frames, 96x64 (12288 bytes). The vendor renders this button only for productId 12463; this keyboard is 12744. Nothing on the wire enforces that, but it is a different frame size for a device we do not have. NOT implemented, NOT tested."
       },
       "frameRate": "One rate for the whole animation, sent once as the last byte of the closing cmd19. The vendor's slider is 1-60, default 30. A GIF with variable per-frame delays therefore cannot be reproduced exactly.",
@@ -646,10 +647,6 @@
     {
       "item": "whether clear-picture also clears a stored GIF",
       "tried": "Still untested. Milestone 4 deliberately does NOT tell users to run clear-picture after a failed GIF upload for this reason; the advice is to re-run set-gif. Milestone 7 shipped a clear-gif command, but it clears a GIF directly -- it does not answer whether clear-picture ALSO does, which remains a separate, still-open question."
-    },
-    {
-      "item": "clear-gif's functional effect -- erasure vs. only clearing the live display",
-      "tried": "The command's 4 reports (cmd18 pair, cmd19 pair) are decoded, checksummed by hand, and all 4 are ACKed by the device -- confirmed deterministic across 3 independent captures. But an ACK only proves the device accepted the bytes, not that the stored animation is erased rather than just the live display clearing -- this repo has already been burned by exactly that gap once (switch-page gif's cmd15 bytes were correct and ACKed from Milestone 2 onward, yet the command was believed broken for two milestones because nobody had separately confirmed what the ACK couldn't tell them). The visual check -- save a GIF, confirm it plays, run clear-gif, confirm the panel goes blank, then physically disconnect and reconnect the keyboard and confirm the old GIF does not come back -- has not yet been run. Treat clear-gif as 'captured, decoded, ACKed -- not yet confirmed to persist across a reconnect' until it has."
     },
     {
       "item": "whether to implement the vendor GIF-save post-process (pn/Vr/wn)",
