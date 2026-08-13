@@ -217,6 +217,46 @@ Local time is used throughout (`hour()`/`minute()`/etc. on a JS `Date`
 object, which read local time unless explicitly converted) — no explicit
 UTC conversion in the vendor code.
 
+### A firmware bug in the panel's 12-hour clock (2026-08-13)
+
+The hour byte we send is plain 0-23. The panel renders it in 12-hour form
+with an AM/PM indicator, and **its conversion is wrong for exactly two
+hours of the day**.
+
+Characterised on the real keyboard by sending four different hours. The
+protocol has no test hook for this, so the hours were faked by running
+`set-time` under a different `TZ` — the tool reads local time, so
+`TZ=Asia/Tokyo ./yunzii-b75-tui set-time` sends Tokyo's hour without
+touching the host clock:
+
+| `TZ` | hour byte sent | panel shows | correct? |
+|---|---|---|---|
+| `Pacific/Kiritimati` | 0 | `AM 00:54` | ✗ should be `12:54 AM` |
+| `UTC` | 10 | `AM 10:53` | ✓ |
+| `Europe/Rome` | 12 | `PM 00:07` | ✗ should be `12:07 PM` |
+| `Asia/Tokyo` | 19 | `PM 7:54` | ✓ |
+
+That is the signature of `display_hour = hour % 12` with the
+`if (display_hour == 0) display_hour = 12` line missing. The AM/PM flag
+itself (`hour >= 12`) is correct in all four cases, including both failing
+ones — so only the digits are wrong, never the meridiem. The clock is
+right 22 hours a day and wrong through the noon hour and the midnight
+hour.
+
+**This is the device's own firmware, not this tool and not a protocol
+mistake we are making.** The bytes we send are byte-identical to the
+vendor's own web tool (verified in Milestone 1 against a live capture of
+their button), so their official configurator drives the same wrong
+display. Nothing in the reviewed vendor bundle offers a 12/24-hour
+setting either — searched for it directly; the only `is24` symbol in
+there is `is24G`, the 2.4 GHz dongle flag, unrelated.
+
+**There is no workaround from our side.** Because the conversion is
+`hour % 12`, no hour byte can make the panel print `12`: 0, 12 and 24 all
+map to the same `00`. Sending a deliberately wrong hour to compensate
+would only move the error somewhere else. A fix has to happen in device
+firmware.
+
 ## Live capture cross-validation
 
 | Capture | Elapsed since previous | hour | minute | second | Checksum predicted = observed |
