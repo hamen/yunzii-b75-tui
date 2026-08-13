@@ -251,12 +251,13 @@ pub fn load_and_encode_picture(
     // `imageSmoothingEnabled = false` (a real 2x downscale, 320x192 ->
     // 160x96, not a same-size copy -- see PROTOCOL.md). That handler's own
     // FIRST stage (rendering the source onto its 320x192 canvas, where
-    // placement is decided) is also traced now: a fabric.js object
-    // transform, not a pixel algorithm, so there is no first-stage pixel
-    // filter to match here -- but the exact resampling quality fabric.js
-    // applies when rendering that transform is not independently confirmed
-    // (see PROTOCOL.md). This claim covers only the final export step's
-    // filter, which IS confirmed.
+    // placement is decided) is also traced now: the PLACEMENT GEOMETRY is
+    // a fabric.js object transform, not a pixel algorithm, so there is no
+    // separate geometry to match here. But fabric still has to rasterize
+    // that transform onto the canvas, which necessarily resamples the
+    // source bitmap -- what filter it uses for that resample is NOT
+    // independently confirmed (see PROTOCOL.md). This claim covers only
+    // the final export step's filter, which IS confirmed.
     let panel = resize_to_panel(&img, placement);
     let pixels = adjust_and_encode(&panel, adjustments);
     debug_assert_eq!(pixels.len(), protocol::PICTURE_BYTES);
