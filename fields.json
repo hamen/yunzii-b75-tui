@@ -221,7 +221,8 @@
             "range": "0-59"
           }
         ]
-      }
+      },
+      "deviceRenderBug": "The hour byte is plain 0-23 and is transmitted correctly; the PANEL's own 12-hour rendering of it is buggy. MEASURED on hardware 2026-08-13, four hours only, faked with TZ (the tool reads local time): hour 0 -> 'AM 00:54' (should be 12:54 AM), hour 10 -> 'AM 10:53' (correct), hour 12 -> 'PM 00:07' (should be 12:07 PM), hour 19 -> 'PM 7:54' (correct). INFERRED, not measured: these four match display_hour = hour % 12 with the 'if 0 then 12' correction missing -- the two failures are exactly the hours that map to zero, and the AM/PM flag (hour >= 12) is right in all four cases including both failures, so only the digits are ever wrong. The other 20 hours were NOT tested and a different implementation could fit the same four points, so treat the formula as a well-supported hypothesis rather than a read of the firmware; a full sweep needs a human reading the panel 24 times, as nothing in the protocol reports back what is displayed. Independent of the formula: this is device firmware, NOT this tool and not a protocol error -- our bytes are byte-identical to the vendor's own web tool, so their official configurator shows the same thing. No 12/24-hour setting exists anywhere in the reviewed vendor bundle (the only 'is24' symbol is is24G, the 2.4 GHz dongle flag). If the mod-12 hypothesis holds then no host-side workaround is possible, because no hour byte can make the panel print '12'; that conclusion is exactly as solid as the hypothesis. An out-of-range hour such as 24 was never sent (no timezone produces one), so its behaviour is unknown."
     },
     "cmd10_setDate": {
       "infoPackagePayload": {

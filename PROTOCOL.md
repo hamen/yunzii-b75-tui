@@ -217,6 +217,65 @@ Local time is used throughout (`hour()`/`minute()`/etc. on a JS `Date`
 object, which read local time unless explicitly converted) — no explicit
 UTC conversion in the vendor code.
 
+### A firmware bug in the panel's 12-hour clock (2026-08-13)
+
+The hour byte we send is plain 0-23. The panel renders it in 12-hour form
+with an AM/PM indicator, and **that conversion is wrong for at least two of
+the four hours tested** — including noon, which is why this was noticed at
+all.
+
+Characterised on the real keyboard by sending four different hours. The
+protocol has no test hook for this, so the hours were faked by running
+`set-time` under a different `TZ` — the tool reads local time, so
+`TZ=Asia/Tokyo ./target/release/yunzii-b75-tui set-time` sends Tokyo's hour without
+touching the host clock:
+
+| `TZ` | hour byte sent | panel shows | correct? |
+|---|---|---|---|
+| `Pacific/Kiritimati` | 0 | `AM 00:54` | ✗ should be `12:54 AM` |
+| `UTC` | 10 | `AM 10:53` | ✓ |
+| `Europe/Rome` | 12 | `PM 00:07` | ✗ should be `12:07 PM` |
+| `Asia/Tokyo` | 19 | `PM 7:54` | ✓ |
+
+**What is measured, and what is inferred.** Measured: those four hours, on
+this unit, rendered as shown. Everything below is the inference that fits
+them, not a second measurement.
+
+The four results match `display_hour = hour % 12` with the
+`if (display_hour == 0) display_hour = 12` line missing — the two failures
+are exactly the two hours that map to zero under mod 12, and the AM/PM flag
+(`hour >= 12`) is right in all four cases including both failures — in
+those four, only the digits were ever wrong. If that formula is the actual
+implementation
+then the clock is wrong through the noon and midnight hours and correct the
+other 22, but **the remaining 20 hours were not tested** and a different
+implementation could fit the same four points. Treat the formula as a
+well-supported hypothesis, not a read of the firmware.
+
+(The obvious next step — sweep all 24 hours — needs a human reading the
+panel 24 times, since nothing in the protocol reports back what is being
+displayed. Bracketing the two failures with hours 11/13 and 23/1 would get
+most of the value for four more readings.)
+
+**This is the device's own firmware, not this tool and not a protocol
+mistake we are making.** The bytes we send are byte-identical to the
+vendor's own web tool (verified in Milestone 1 against a live capture of
+their button), so their official configurator drives the same wrong
+display. Nothing in the reviewed vendor bundle offers a 12/24-hour
+setting either — searched for it directly; the only `is24` symbol in
+there is `is24G`, the 2.4 GHz dongle flag, unrelated.
+
+**No workaround from our side, if the hypothesis holds.** Under `hour % 12`
+no hour byte can make the panel print `12` — 0, 12 and 24 all map to the
+same `00` — so sending a deliberately wrong hour would only move the error
+somewhere else, and a fix would have to happen in device firmware. This
+conclusion inherits the hypothesis's uncertainty: it is exactly as solid as
+the formula above, which four data points support but do not prove. What
+was actually tried is only what the table shows — hours 0 and 12 both
+rendered `00`. An out-of-range hour byte such as 24 was never sent (no
+timezone produces one, and `set-time` has no override), so whether the
+firmware would clamp, wrap or misbehave on one is unknown.
+
 ## Live capture cross-validation
 
 | Capture | Elapsed since previous | hour | minute | second | Checksum predicted = observed |
