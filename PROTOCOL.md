@@ -871,7 +871,9 @@ reconnect".
 ## The GIF-save post-process (`pn`/`Vr`/`wn`) -- decoded, not protocol, not implemented (Milestone 7 follow-up)
 
 Milestone 7 left this named but unread: the vendor's real per-frame GIF-save
-call site (source, unminified names restored by hand from context) is
+call site (minified names kept as-is -- the verbatim text is in
+`scripts/vendor-source-excerpt.js` -- with line breaks and comments added
+here for readability only) is
 
 ```js
 nt.applyFilters();                 // fabric.js filters: grayscale/blur/
