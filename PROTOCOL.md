@@ -236,12 +236,24 @@ touching the host clock:
 | `Europe/Rome` | 12 | `PM 00:07` | ✗ should be `12:07 PM` |
 | `Asia/Tokyo` | 19 | `PM 7:54` | ✓ |
 
-That is the signature of `display_hour = hour % 12` with the
-`if (display_hour == 0) display_hour = 12` line missing. The AM/PM flag
-itself (`hour >= 12`) is correct in all four cases, including both failing
-ones — so only the digits are wrong, never the meridiem. The clock is
-right 22 hours a day and wrong through the noon hour and the midnight
-hour.
+**What is measured, and what is inferred.** Measured: those four hours, on
+this unit, rendered as shown. Everything below is the inference that fits
+them, not a second measurement.
+
+The four results match `display_hour = hour % 12` with the
+`if (display_hour == 0) display_hour = 12` line missing — the two failures
+are exactly the two hours that map to zero under mod 12, and the AM/PM flag
+(`hour >= 12`) is right in all four cases including both failures, so only
+the digits are ever wrong. If that formula is the actual implementation
+then the clock is wrong through the noon and midnight hours and correct the
+other 22, but **the remaining 20 hours were not tested** and a different
+implementation could fit the same four points. Treat the formula as a
+well-supported hypothesis, not a read of the firmware.
+
+(The obvious next step — sweep all 24 hours — needs a human reading the
+panel 24 times, since nothing in the protocol reports back what is being
+displayed. Bracketing the two failures with hours 11/13 and 23/1 would get
+most of the value for four more readings.)
 
 **This is the device's own firmware, not this tool and not a protocol
 mistake we are making.** The bytes we send are byte-identical to the
@@ -251,11 +263,16 @@ display. Nothing in the reviewed vendor bundle offers a 12/24-hour
 setting either — searched for it directly; the only `is24` symbol in
 there is `is24G`, the 2.4 GHz dongle flag, unrelated.
 
-**There is no workaround from our side.** Because the conversion is
-`hour % 12`, no hour byte can make the panel print `12`: 0, 12 and 24 all
-map to the same `00`. Sending a deliberately wrong hour to compensate
-would only move the error somewhere else. A fix has to happen in device
-firmware.
+**No workaround from our side, if the hypothesis holds.** Under `hour % 12`
+no hour byte can make the panel print `12` — 0, 12 and 24 all map to the
+same `00` — so sending a deliberately wrong hour would only move the error
+somewhere else, and a fix would have to happen in device firmware. This
+conclusion inherits the hypothesis's uncertainty: it is exactly as solid as
+the formula above, which four data points support but do not prove. What
+was actually tried is only what the table shows — hours 0 and 12 both
+rendered `00`. An out-of-range hour byte such as 24 was never sent (no
+timezone produces one, and `set-time` has no override), so whether the
+firmware would clamp, wrap or misbehave on one is unknown.
 
 ## Live capture cross-validation
 
