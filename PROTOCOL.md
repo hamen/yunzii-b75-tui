@@ -947,7 +947,7 @@ confirmation that mode 2 targets a different physical screen (consistent
 with its vendor-UI gate on product ID 12463, this keyboard is 12744, see
 above).
 
-## The picture path's own placement -- decoded, closes the last open trace gap (Milestone 7 follow-up)
+## The picture path's own placement -- mechanism decoded, resampling quality still open (Milestone 7 follow-up)
 
 Milestone 7 confirmed `Ut()` is GIF-only and left the picture path's own
 first-stage rendering (source onto its 320×192 editor canvas, where
@@ -972,13 +972,19 @@ T === "0"                          // "0" = "in the middle" (contain), same
 Same shape as `Ut()`'s two branches (contain-fit-and-center vs. plain
 stretch), but a genuinely different implementation: a fabric.js *object
 transform* (scale + position properties on the image, rounded to 2 decimal
-places) rendered by the browser's own canvas compositor, not a pixel-level
-canvas draw. Whatever resampling quality that transform gets is therefore
-the browser's ordinary (smoothed) canvas rendering default -- fabric does
-not disable `imageSmoothingEnabled` for this draw. Two small helper
-functions, `G()` (recompute contain) and `I()` (recompute stretch), re-run
-this same math whenever the placement toggle or any adjustment slider
-changes, keeping the object's transform in sync with the current state.
+places), not a pixel-level canvas draw. `y.current` (the fabric `Canvas`
+this transform lives on) wraps the SAME DOM element as `L.current` (stage
+2's raw draw source below) -- fabric's `Canvas` constructor takes
+`L.current` directly and sets no smoothing option of its own (see
+`vendor-source-excerpt.js`). What that construction does NOT show is
+whether fabric.js sets any 2D-context smoothing flag internally when it
+renders the transform -- so the exact resampling quality of stage 1's
+render is **not independently confirmed** by this reading, only that no
+explicit nearest-neighbour override appears anywhere in the reviewed
+source. Two small helper functions, `G()` (recompute contain) and `I()`
+(recompute stretch), re-run this same math whenever the placement toggle
+or any adjustment slider changes, keeping the object's transform in sync
+with the current state.
 
 **Stage 2 -- on save**, already documented and already correctly matched by
 this repo: draw the 320×192 editor canvas down to a fresh 160×96 canvas
@@ -987,10 +993,13 @@ with `imageSmoothingEnabled = false` (real nearest-neighbour 2x downscale),
 handling at all -- confirmed again from this same read, matching
 `rgb565_encode`'s existing doc comment exactly).
 
-This closes the gap cleanly: the picture path's placement decision is made
+This mostly closes the gap: the picture path's placement DECISION is made
 entirely in stage 1 as a vector transform, at full editor resolution,
 independent of stage 2's pixel-level downscale -- there is no missing
-stage-1 pixel algorithm to match, because stage 1 never touches pixels.
+stage-1 pixel PLACEMENT algorithm to match, because stage 1 never touches
+pixels for that purpose. What stays open, narrowly, is the resampling
+quality of fabric's own render of that transform (see above) -- unlike
+the placement mechanism itself, this is not settled by the source alone.
 This repo's own `Contain`/`Fill` (`src/plan.rs`, Milestone 7) already do
 the equivalent computation in a single geometry pass at panel resolution
 rather than at 2x-then-downscale -- closer in *spirit* to this picture-path
@@ -1103,10 +1112,13 @@ What is genuinely left:
   anymore, a product decision: GIFs from this tool will show more banding
   and less post-resize sharpening than the vendor's own upload until this
   is implemented, or the gap is accepted as-is.
-Nothing else is a discovery gap as of this follow-up: the picture path's
-first-stage fabric.js rendering (source onto its 320×192 canvas) is now
-fully decoded too (see above) -- it is a fabric object transform, not a
-pixel algorithm, so there was no missing stage-1 pixel logic to match.
+- **The picture path's first-stage fabric.js rendering** (source onto its
+  320×192 canvas) is now mostly decoded too (see above): the placement
+  DECISION is a fabric object transform, not a pixel algorithm, settling
+  the main question. What stays open, narrowly: the exact resampling
+  quality of fabric's own render of that transform -- the source shows no
+  explicit smoothing override, but doesn't show fabric's internal
+  behaviour either, so this is not fully confirmed either way.
 
 The generic opcode / checksum / report-structure model carries over directly to
 anything that does turn out to be a command; only the per-command payload
