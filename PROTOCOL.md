@@ -521,9 +521,14 @@ anyone unifies them.
 | 2 | Save GIF to the device home page | 42 | 96×64 | no |
 
 Mode 0 is the one that cost Milestone 2 a round of investigation: it stores
-frames somewhere that never plays. Mode 2's button renders only for product ID
-12463 (this keyboard is 12744) — a UI gate, not a wire one, but it is a
-different frame size for a device we do not have.
+frames somewhere with no known way to make them play (neither the GIF page
+nor power-up/replug show it, though the search hasn't been exhaustive --
+still genuinely unresolved, not "does nothing"). Mode 2's button renders only
+for product ID 12463 (this keyboard is 12744) — a UI gate, not a wire one:
+sending mode-2-formatted bytes to THIS keyboard is untried, not impossible;
+what actually needs a 12463 unit is confirming the vendor's *intended* mode-2
+behavior specifically, plus it's a different frame size for a device we do
+not have.
 
 ### Frame rate
 
@@ -701,9 +706,167 @@ rather than assumed:
 - **The order is fixed** at brightness → chroma → saturation → grayscale →
   sharpen → blur. The vendor pushes each filter as its switch is toggled, so
   its result depends on click order. That is not a specification to copy.
-- **Applied at panel size**, after the stretch to 160×96, where the vendor
-  works on the full-resolution canvas. A 160-frame GIF from a 4K source would
-  otherwise be gigabytes of RGBA.
+- **Applied at panel size**, after placement has fit the source into 160×96,
+  where the vendor works on the full-resolution canvas. A 160-frame GIF from
+  a 4K source would otherwise be gigabytes of RGBA.
+
+## Placement ("Location") is not protocol either -- resolved (Milestone 7)
+
+Same class of finding as the sliders above: the "Location" dropdown ("In the
+middle" / "Cover up completely") sends **no HID at all**. Confirmed live --
+a hook on `HIDDevice.prototype.sendReport`/`sendFeatureReport`, toggled the
+dropdown, `window.__hidLog` stayed empty.
+
+**For GIFs**, traced to the vendor's real resize/placement function (called
+`Ut()` in the minified bundle -- the only call site found for it, inside the
+per-frame GIF save loop, after Fabric filters are applied and immediately
+before the RGB565 pack):
+
+```js
+function Ut(Ie, et, Fe, ke) {          // Ie=source, et/Fe=panel W/H, ke=placement
+  const st = document.createElement("canvas");
+  st.width = et * 3; st.height = Fe * 3;      // 3x supersample
+  const ut = st.getContext("2d");
+  ut.imageSmoothingEnabled = true;
+  ut.imageSmoothingQuality = "high";
+  ut.fillStyle = "black";
+  ut.fillRect(0, 0, st.width, st.height);      // canvas starts OPAQUE BLACK
+  const le = Ie.width, me = Ie.height;
+  if (ke === "0") {                            // "In the middle"
+    const Kt = st.width / le, ft = st.height / me,
+          Dt = Math.min(Kt, ft),
+          pt = (st.width - le * Dt) / 2,
+          mt = (st.height - me * Dt) / 2;
+    ut.drawImage(Ie, Math.round(pt), Math.round(mt), Math.round(le * Dt), Math.round(me * Dt));
+  } else {                                      // "Cover up completely"
+    ut.drawImage(Ie, 0, 0, st.width, st.height); // stretch to EXACTLY fill -- no crop
+  }
+  // then two more high-quality downsample passes: 3x -> 1.5x -> 1x
+}
+```
+
+Two corrections to what the UI labels imply:
+
+1. **"Cover up completely" is CSS `object-fit: fill`, not `cover`.** Despite
+   the name, there is no cropping -- the vendor draws the whole source into
+   the full destination rectangle. This tool's existing (pre-Milestone-7,
+   undocumented) `resize_exact`/`FilterType::Nearest` behavior already
+   matched this exactly; `--placement fill` is that same behavior, now named
+   and documented instead of being the only, implicit option.
+2. **"In the middle" pads with OPAQUE black** (`fillRect` before the
+   `if`/`else`), not a transparent letterbox -- confirmed from the bundle,
+   not assumed.
+
+**What this repo does differently, and why:**
+
+- **Geometry is computed once, at panel resolution (160×96), not the
+  vendor's real 3x-then-1.5x-then-1x staged resolution.** For a 161×97
+  source the vendor's own 3x-stage numbers are `(x=1, y=0, w=478, h=288)` at
+  480×288 -- not the same placement, even after dividing by 3, as computing
+  directly at 160×96 (which gives `(x=0, y=0, w=159, h=96)`). Exactly
+  reproducing the vendor would mean reproducing all three stages AND the
+  browser's own bicubic-family resampling at each one, which buys nothing
+  on its own since the pixel *values* still can't match without the second
+  part. So this is **vendor-inspired geometry, not vendor-exact** -- same
+  shape of formula (`min` scale, centred offset, `Math.round`-equivalent
+  rounding via this repo's existing `js_round`), computed at the one
+  resolution that matters for the final upload.
+- **`FilterType::Lanczos3`** for `Contain`'s resize, a reasonable
+  high-quality choice with no vendor claim behind it (same honesty standard
+  as the Gaussian blur above).
+- **Padding is literal `RGBA(0, 0, 0, 255)`**, not alpha-compositing onto a
+  black backdrop the way the vendor's canvas draw does. The vendor's
+  approach destroys the source's alpha channel entirely wherever it draws
+  (compositing onto an opaque backdrop always yields alpha 1, regardless of
+  source alpha) -- this repo keeps alpha as an independent fourth channel in
+  the resized region, consistent with how the existing `Fill`/
+  `resize_exact` path (and pictures generally, see above) already treats it.
+- **A fully transparent (`alpha == 0`) pixel is blackened before the resize
+  runs**, the same rule Milestone 6 already applies before its own spatial
+  filters, extended here since `Contain`'s `Lanczos3` resize can otherwise
+  leak hidden colour into a resized neighbour exactly the way sharpen/blur
+  could. Deliberately narrower than the "partial transparency keeps its
+  full colour" rule above: only `alpha == 0` is blackened, partial alpha is
+  untouched, consistent with that rule rather than contradicting it.
+- **Order unchanged**: placement still runs before `Adjustments::apply()`,
+  the same order Milestone 6 already established for memory reasons (up to
+  160 full-resolution RGBA frames would otherwise be gigabytes). The vendor
+  does the opposite -- filters before placement, so its own padding stays
+  pure, filter-untouched black. This repo's `Contain` padding, being an
+  ordinary opaque black pixel to the filter pipeline, IS visibly affected
+  by adjustments (e.g. brightness) -- a documented, deliberate divergence
+  from the vendor, not a bug.
+
+**For pictures**, `Ut()` is confirmed GIF-only (exhaustive re-search: its two
+structurally unique markers, `fillStyle="black"` and `Math.min(Kt,ft)`, each
+occur exactly once in the whole bundle). The picture-save handler is a
+*different* function, traced separately: it draws the fabric.js canvas
+(already rendered at 320×192) down to the 160×96 export canvas with
+`imageSmoothingEnabled = false` -- a real 2x downscale, confirming this
+repo's existing `Fill` claim for pictures (see the picture-upload section
+above) is accurate. What that handler's FIRST stage does -- rendering the
+source onto its 320×192 canvas in the first place, where placement is
+presumably decided via fabric's own object-scaling API rather than a raw
+canvas draw -- has **not** been traced. `--placement`/`Contain` ships
+identically for both `set-picture` and `set-gif` (same CLI flag, same Rust
+code, same geometry formula) as this tool's own internally consistent
+implementation of the feature -- not because the picture-side vendor
+mechanism has been separately verified to compute the same geometry.
+
+## `clear-gif` -- wire format resolved, functional effect NOT yet confirmed (Milestone 7)
+
+Decoded from a live capture (hook on `HIDDevice.prototype.sendReport`/
+`sendFeatureReport` for the outbound bytes, the device's own `inputreport`
+event for real ACKs -- not constructed via a byte-6 flip). Confirmed
+deterministic across 3 independent capture attempts (2 out-only, 1 full
+duplex).
+
+8 raw events: two `infoPackage(0x40) -> finish(0x42)` pairs, cmd18 then
+cmd19, no repeat loop (unlike `clear-picture`'s 16x):
+
+```
+out: 40 00 00 09 71 01 00 a5 5a 12 00 01 05 10 01 00...00   (cmd18)
+in:  40 00 00 09 71 01 55 a5 5a 12 00 01 05 10 01 00...00   (ACK: byte 6 flips, nothing else)
+out: 42 00 00 38 7a 00 00 00...00                            (finish)
+in:  42 00 00 38 7a 00 55 00...00                             (ACK)
+out: 40 00 00 09 23 02 00 a5 5a 13 00 02 c4 01 01 00...00   (cmd19)
+in:  40 00 00 09 23 02 55 a5 5a 13 00 02 c4 01 01 00...00   (ACK)
+out: 42 00 00 38 7a 00 00 00...00                            (finish)
+in:  42 00 00 38 7a 00 55 00...00                             (ACK)
+```
+
+Both checksums verified by hand against the outer `checksum16_le` formula:
+cmd18's payload sums to 369 (`0x0171`); cmd19's sums to 547 (`0x0223`); both
+match bytes 4-5 above.
+
+`cmd19`'s payload is byte-identical to `gif_session_payload(19, [196, 1],
+GIF_MODE_SAVE_TO_DEVICE, 0)` -- the same bytes as the cmd19 half of a normal
+GIF session open. Almost certainly coincidental vendor reuse, shipped as its
+own named literal constant rather than a call into `gif_session_payload()`,
+so a future change to session-open encoding can't silently change
+`clear-gif` too. `cmd18`'s payload does NOT match `gif_session_payload(18,
+...)`'s shape at all beyond the shared cmd number (length nibble 1, not 2;
+trailer `[5, 16, 1, 0]`, not the `[4, 80]` open/close constant) -- the same
+pattern as `clear-picture` (cmd14) being structurally unrelated to the
+page-switch commands despite superficial resemblance.
+
+No deliberate delay between any of the 4 reports (0-7ms gaps, ordinary HID
+round-trip time) -- unlike picture-upload's 300ms pause or GIF-upload's
+30ms/3000ms host sleeps. `build_clear_gif_sequence()` needs no artificial
+delay of its own.
+
+**What this evidence does and does not prove.** The device ACKing all 4
+reports proves it accepted them. It does not prove they erase the stored
+GIF -- this repo has already been burned by exactly that gap once
+(`switch-page gif`'s cmd15 bytes were correct and ACKed from Milestone 2
+onward, but the command was believed broken for two milestones because
+nobody had separately confirmed what the ACK couldn't tell them). The
+visual check -- save a GIF, confirm it plays, run `clear-gif`, confirm the
+panel goes blank, **then physically disconnect and reconnect the keyboard**
+and confirm the old GIF does not come back -- is a pre-merge gate for this
+command, tracked separately; until it passes, treat `clear-gif` as
+"captured, decoded, ACKed -- not yet confirmed to persist across a
+reconnect".
 
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
@@ -728,11 +891,28 @@ and what their trailing bytes mean, the per-frame cmd16/cmd17 headers, the
 1024-byte block chunking with its restarting offsets, the mode table, and the
 frame-rate byte. `switch-page gif` ships too; it was correct all along.
 
+**As of Milestone 7**: the "Location" placement setting sends no HID (see
+above), same as Milestone 6's sliders; `clear-gif`'s bytes (cmd18/cmd19, a
+new pair distinct from the GIF session pair) are decoded, checksummed, and
+confirmed deterministic; GIF save mode 2 closes as resolved-N/A (the
+vendor's own UI doesn't offer it for this product, see below).
+
 **Unresolved** (named, not silently missing): the numeric meaning of the
 `finish` command's constant length byte (`0x38`); whether `clear-picture`
-affects a stored GIF; GIF save modes 0 and 2, decoded but never exercised; the
+affects a stored GIF (`clear-gif` is a separate command and does not answer
+this); GIF save mode 0, decoded but with no known way to make it play (the
+search hasn't been exhaustive); whether sending mode-2-formatted bytes to
+THIS keyboard (untried, not blocked by the wire) does anything -- confirming
+the vendor's *intended* mode-2 behavior would need a product-ID-12463 unit;
+`clear-gif`'s functional effect (erasure vs. just clearing the live display)
+-- captured and ACKed, not yet visually confirmed across a reconnect; the
 2.4 GHz dongle and Bluetooth connection modes; any connect/init traffic before
-the first command.
+the first command; a previously undocumented `pn()`/`Vr()` post-process seen
+in the vendor's real GIF-save call site (`nt.applyFilters(); ...;
+Kt=Ut(xt,st,ut,D); Kt=pn(Kt); x&&Vr(Kt,.25); ...`) -- an apparent
+anti-banding/dither step, unconditional (`pn`) and conditionally gated
+(`Vr`, on an unidentified control) -- not investigated, not implemented, a
+new open item for a future milestone.
 
 ### The GIF-page mystery, solved
 
@@ -742,8 +922,9 @@ own button, and left it open.
 
 cmd15 was never the problem. The vendor's GIF save has **three modes** (see the
 table above), and every test before Milestone 3 used **mode 0**, which stores
-frames somewhere that never plays -- not on the GIF page, and not at power-up
-either (tested by replugging: the panel comes back to the home screen).
+frames somewhere with no known way to make them play -- not on the GIF page,
+and not at power-up either (tested by replugging: the panel comes back to the
+home screen), though the search hasn't been exhaustive.
 Re-saving with **mode 1** makes the GIF play immediately. There was simply
 nothing on the GIF page to show.
 
@@ -753,25 +934,40 @@ frame rate. Milestone 4 implements them.
 
 ## What's next
 
-Milestones 1-6 ship `set-time`, `switch-page home`/`picture`/`gif`,
-`clear-picture`, `set-picture`, `set-gif`, the `ratatui` interface this repo is
-named after, and the picture adjustments -- see `README.md`.
+Milestones 1-7 ship `set-time`, `switch-page home`/`picture`/`gif`,
+`clear-picture`, `clear-gif`, `set-picture`, `set-gif`, `--placement`, the
+`ratatui` interface this repo is named after, and the picture adjustments --
+see `README.md`.
 
-Two of those turned out not to need a discovery pass at all, and the pattern is
-worth noticing: **the sliders and toggles were never protocol** (see the
-section above), and `switch-page gif` had been correct since Milestone 2 while
-being blamed for a fault in how the GIF was *saved*. Reading the vendor's own
-source answered both faster than another capture session would have.
+Three of those turned out not to need a discovery pass at all, and the
+pattern is worth noticing: **the sliders/toggles and the placement setting
+were never protocol** (see the sections above), and `switch-page gif` had
+been correct since Milestone 2 while being blamed for a fault in how the GIF
+was *saved*. Reading the vendor's own source answered all three faster than
+another capture session would have.
 
 What is genuinely left:
 
-- The vendor's "in the middle" versus "cover up completely" placement setting.
-  Likely another client-side transform rather than a command; check the bundle
-  before capturing anything.
-- A `clear-gif` command, if one exists. Live capture showed the vendor's button
-  is structurally unrelated to `clear-picture`, and it is still undecoded.
-- GIF save modes 0 and 2, decoded but never exercised.
-- Whether `clear-picture` disturbs a stored GIF.
+- **`clear-gif`'s functional effect** (erasure vs. just clearing the live
+  display) -- captured, decoded, and ACKed, but the visual reconnect check
+  (see above) hasn't run yet. A pre-merge gate on this specific command, not
+  a "someday" item.
+- **GIF save mode 0** -- stores data, no known way to make it play, search
+  not exhaustive. Genuinely unresolved, not "does nothing".
+- **GIF save mode 2 on THIS keyboard** -- the vendor's own UI doesn't offer
+  it for product 12744, but nothing on the wire blocks sending the bytes;
+  untried, not impossible. Confirming the vendor's *intended* mode-2
+  behavior would need a product-ID-12463 unit.
+- **Whether `clear-picture` disturbs a stored GIF.** `clear-gif` (this
+  milestone) answers a different question -- it clears a GIF directly, it
+  doesn't say what `clear-picture` does to one.
+- **A previously-undocumented `pn()`/`Vr()` post-process**, found this
+  milestone in the vendor's real GIF-save call site (see above) -- an
+  apparent anti-banding/dither step, not investigated, not implemented.
+- The picture path's fabric.js first-stage rendering (source onto its
+  320×192 canvas, where placement is presumably decided) -- traced only as
+  far as the SECOND stage (see above); the first stage's own placement
+  mechanism and resampling quality remain unconfirmed.
 
 The generic opcode / checksum / report-structure model carries over directly to
 anything that does turn out to be a command; only the per-command payload

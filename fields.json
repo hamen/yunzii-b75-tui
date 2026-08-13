@@ -315,7 +315,7 @@
         "encoding": "constant",
         "note": "[magic, cmd=15, 0x00, len=0, innerCrc16(0x0F,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)."
       },
-      "note": "\"Switch to the GIF page\" button. Same info+finish shape as cmd11/cmd13. The bytes are correct and were always correct. Milestone 2 recorded that this command did not visibly switch the panel and filed it as unresolved; Milestone 3 found the real cause, and it was not this command -- the GIF under test had only ever been saved in the vendor's mode 0 (\"set as boot animation\"), which stores frames somewhere that never plays. Saved in mode 1 (\"save to the device\"), the GIF displays and cmd15 switches to it. Milestone 4 ships it as `switch-page gif`, together with `set-gif`. (The old \"see unresolved[0]\" pointer is gone: that entry was resolved and removed, and index 0 now holds an unrelated item. Never cite an unresolved entry by index -- the list is reordered whenever something is resolved.)"
+      "note": "\"Switch to the GIF page\" button. Same info+finish shape as cmd11/cmd13. The bytes are correct and were always correct. Milestone 2 recorded that this command did not visibly switch the panel and filed it as unresolved; Milestone 3 found the real cause, and it was not this command -- the GIF under test had only ever been saved in the vendor's mode 0 (\"set as boot animation\"), which stores frames somewhere with no known way to make them play (the known activation steps -- the GIF page, power-up/replug -- don't show it; the search hasn't been exhaustive). Saved in mode 1 (\"save to the device\"), the GIF displays and cmd15 switches to it. Milestone 4 ships it as `switch-page gif`, together with `set-gif`. (The old \"see unresolved[0]\" pointer is gone: that entry was resolved and removed, and index 0 now holds an unrelated item. Never cite an unresolved entry by index -- the list is reordered whenever something is resolved.)"
     },
     "cmd14_clearPicture": {
       "infoPackagePayload": {
@@ -331,7 +331,7 @@
         "encoding": "constant",
         "note": "[magic, cmd=14, 0x00, len=0, innerCrc16(0x0E,0x00,0x00)]. Resolved Milestone 2 (2026-08-11)."
       },
-      "note": "\"Clear the picture\" button. Same info+finish shape as cmd11/13/15, but sent 16x in a row (32 reports total) -- matches the vendor source's literal for(a=0;a<16;a++) loop, and independently confirmed by counting the full raw HID log (not just trusting the source). Structurally UNRELATED to \"Clear GIF\" despite the vendor's internal function name for this loop implying otherwise -- see the cmd18/19 unresolved entry below and scripts/vendor-source-excerpt.js's corrective note."
+      "note": "\"Clear the picture\" button. Same info+finish shape as cmd11/13/15, but sent 16x in a row (32 reports total) -- matches the vendor source's literal for(a=0;a<16;a++) loop, and independently confirmed by counting the full raw HID log (not just trusting the source). Structurally UNRELATED to \"Clear GIF\" despite the vendor's internal function name for this loop implying otherwise -- see cmd18_clearGif/cmd19_clearGif (resolved Milestone 7) and scripts/vendor-source-excerpt.js's corrective note."
     },
     "cmd16_pictureUploadStart": {
       "infoPackagePayload": {
@@ -406,6 +406,42 @@
       },
       "note": "Resolved Milestone 4 (2026-08-11)."
     },
+    "cmd18_clearGif": {
+      "infoPackagePayload": {
+        "value": [
+          165,
+          90,
+          18,
+          0,
+          1,
+          5,
+          16,
+          1,
+          0
+        ],
+        "encoding": "constant",
+        "note": "\"Clear GIF\" button, Equipment setup tab. Shares a cmd number AND opcode (0x40, info-package) with cmd18_gifSession's OPEN form -- disambiguated by the payload length-nibble byte (1 here, no variable trailer; 2 there, prefix + 2-byte trailer). Does NOT match cmd18_gifSession's shape at all beyond the shared cmd number: different length nibble, different trailer bytes ([5,16,1,0] here vs the [4,80] open/close constant there). Resolved Milestone 7 (2026-08-12), live capture, 3 independent captures confirmed deterministic (2 out-only, 1 full duplex with real device ACKs)."
+      },
+      "note": "Resolved Milestone 7 (2026-08-12)."
+    },
+    "cmd19_clearGif": {
+      "infoPackagePayload": {
+        "value": [
+          165,
+          90,
+          19,
+          0,
+          2,
+          196,
+          1,
+          1,
+          0
+        ],
+        "encoding": "constant",
+        "note": "The second half of \"Clear GIF\". Byte-identical to cmd19_gifSessionRate's dataPacketPayload prefix + a [mode=1, last=0] trailer -- almost certainly coincidental vendor reuse, not a documented relationship. Sent as an info-package (0x40), unlike cmd19_gifSessionRate which is always a data-packet (0x41) in both its open and close forms -- this is the one detail that actually disambiguates it, since the byte content alone is identical to a normal session-open's cmd19 half."
+      },
+      "note": "Resolved Milestone 7 (2026-08-12)."
+    },
     "cmd16_gifFrameHeader": {
       "dataPacketPayload": {
         "prefix": [
@@ -462,6 +498,14 @@
       "shape": "The 2-report infoPackage(0x40) -> finish(0x42) pair, repeated 16 times (32 reports total) -- matches the vendor source's literal for(a=0;a<16;a++) loop. All 16 repeats are byte-identical (the command carries no per-iteration state), the same way set-time's 3 repeats are.",
       "resolvedBy": "Milestone 2, live HID capture + full raw-log event count, 2026-08-11."
     },
+    "clearGif": {
+      "commands": [
+        "cmd18_clearGif",
+        "cmd19_clearGif"
+      ],
+      "shape": "4 reports: cmd18's infoPackage(0x40) -> finish(0x42), then cmd19's infoPackage(0x40) -> finish(0x42) -- two DIFFERENT payloads, no repeat loop (unlike clear-picture's 16x). No deliberate delay between any of the 4 reports (0-7ms gaps observed, ordinary HID round-trip time) -- unlike picture-upload's 300ms pause or GIF-upload's host sleeps.",
+      "resolvedBy": "Milestone 7, live HID capture (real device ACKs, not flip-derived), 3 independent captures confirmed deterministic, 2026-08-12."
+    },
     "pictureUpload": {
       "commands": [
         "cmd16_pictureUploadStart",
@@ -497,7 +541,7 @@
         "note": "THE KEY DIFFERENCE FROM PICTURE UPLOAD. A frame's 30720 bytes are pushed one 1024-byte block at a time, and each block is chunked independently, so the offset in bytes 1-2 RESTARTS AT 0 for every block and never reaches 1024. 1024 = 18*56 + 16, so a block is 19 packets whose last declares 16 bytes. Picture upload instead runs a single continuous offset 0..30688 across the whole frame. Milestone 3's prose said GIF 'reuses the same 56-byte bulk packets', which is true of the packet FORMAT and misleading about the chunker -- do not unify them."
       },
       "modes": {
-        "0": "Set it as the startup animation. Max 64 frames, 160x96. Stores frames somewhere that never plays -- not on the GIF page, and not at power-up (tested by replugging). This is what misled Milestone 2 into believing cmd15 was broken. NOT implemented.",
+        "0": "Set it as the startup animation. Max 64 frames, 160x96. Stores frames somewhere with no known way to make them play -- not on the GIF page, and not at power-up (tested by replugging), though the search hasn't been exhaustive. This is what misled Milestone 2 into believing cmd15 was broken. NOT implemented.",
         "1": "Save to the device. Max 160 frames, 160x96. The mode that actually displays. THIS IS WHAT WE SHIP.",
         "2": "Save GIF to the device home page. Max 42 frames, 96x64 (12288 bytes). The vendor renders this button only for productId 12463; this keyboard is 12744. Nothing on the wire enforces that, but it is a different frame size for a device we do not have. NOT implemented, NOT tested."
       },
@@ -591,12 +635,20 @@
       "tried": "not captured -- the hook was installed after the device was already connected and open (a prior WebHID permission grant was already in place from an earlier session). The vendor's click-handler source (scripts/vendor-source-excerpt.js) shows no reference to connection-time state, which is a weak signal there's no required init handshake, but this is not independently confirmed by capturing a fresh connect sequence."
     },
     {
-      "item": "GIF save modes 0 and 2 -- decoded but never exercised",
-      "tried": "Mode 0 ('set it as the startup animation', max 64 frames) was used by every GIF test before Milestone 3 and never displayed anything: not on the GIF page, and not at power-up either (tested by unplugging and replugging the keyboard, which comes back to the home screen). Where it stores the frames, and what would ever play them, is unknown. Mode 2 ('save GIF to the device home page', max 42 frames, 96x64) has a different frame size and its button renders only for productId 12463; this keyboard is 12744, so it was never clicked and never captured. Nothing on the wire prevents sending either mode -- the gate is in the vendor's UI, not the protocol -- but neither is implemented or tested here, and mode 2 in particular would need a 12288-byte frame this repo does not build."
+      "item": "GIF save mode 0 -- decoded but never exercised",
+      "tried": "Mode 0 ('set it as the startup animation', max 64 frames) was used by every GIF test before Milestone 3 and never displayed anything: not on the GIF page, and not at power-up either (tested by unplugging and replugging the keyboard, which comes back to the home screen). This proves the KNOWN activation steps don't play mode-0 data; it does not prove no activation step exists (a different button sequence, a different page, a firmware-side trigger never tried) -- the search has not been exhaustive. Not implemented."
+    },
+    {
+      "item": "GIF save mode 2 -- not offered by the vendor UI for this product; device-level behavior untried",
+      "tried": "Mode 2 ('save GIF to the device home page', max 42 frames, 96x64) has a different frame size and its button renders only for productId 12463; this keyboard is 12744, so the button is simply absent and was never clicked. This is narrower than 'inapplicable': nothing on the wire prevents sending mode-2-formatted bytes to this keyboard, and doing so has not been tried. What genuinely needs a 12463 unit is confirming the vendor's INTENDED mode-2 behavior, not whether this keyboard would react to the bytes at all. Not implemented -- a scope decision (speculative code for a feature this product's UI doesn't offer), not a claim that the technical question is closed."
     },
     {
       "item": "whether clear-picture also clears a stored GIF",
-      "tried": "Still untested. Milestone 4 deliberately does NOT tell users to run clear-picture after a failed GIF upload for this reason, and there is no clear-gif command; the advice is to re-run set-gif."
+      "tried": "Still untested. Milestone 4 deliberately does NOT tell users to run clear-picture after a failed GIF upload for this reason; the advice is to re-run set-gif. Milestone 7 shipped a clear-gif command, but it clears a GIF directly -- it does not answer whether clear-picture ALSO does, which remains a separate, still-open question."
+    },
+    {
+      "item": "clear-gif's functional effect -- erasure vs. only clearing the live display",
+      "tried": "The command's 4 reports (cmd18 pair, cmd19 pair) are decoded, checksummed by hand, and all 4 are ACKed by the device -- confirmed deterministic across 3 independent captures. But an ACK only proves the device accepted the bytes, not that the stored animation is erased rather than just the live display clearing -- this repo has already been burned by exactly that gap once (switch-page gif's cmd15 bytes were correct and ACKed from Milestone 2 onward, yet the command was believed broken for two milestones because nobody had separately confirmed what the ACK couldn't tell them). The visual check -- save a GIF, confirm it plays, run clear-gif, confirm the panel goes blank, then physically disconnect and reconnect the keyboard and confirm the old GIF does not come back -- has not yet been run. Treat clear-gif as 'captured, decoded, ACKed -- not yet confirmed to persist across a reconnect' until it has."
     }
   ],
   "fixtureSchemaNote": "Every report in fixtures/*.json carries these required keys: transaction_id, command_index, fragment_index, direction, hid_method, report_id, payload_hex. fragment_index is always 0 for every report in this phase's fixtures -- discovery found opcodes 0x40/0x41/0x42 are independently complete report types, not fragments requiring reassembly (see $schema_note above), so the field exists per the fixture schema but carries no ordering information here."

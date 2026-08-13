@@ -448,6 +448,7 @@ mod tests {
     use super::*;
     use crate::adjust::Adjustments;
     use crate::plan;
+    use crate::plan::Placement;
     use std::path::Path;
 
     /// Runs an executor against a recorder with no cancellation, collecting
@@ -504,9 +505,12 @@ mod tests {
     /// requires, then the 551-report body. Nothing else, in that order.
     #[test]
     fn picture_upload_choreography() {
-        let plan =
-            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let plan = plan::plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let body = protocol::build_picture_upload_body(&plan.pixels);
 
         let rec = Recorder::new();
@@ -539,6 +543,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -598,6 +603,7 @@ mod tests {
             Path::new("fixtures/test-anim-18frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -656,6 +662,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -690,9 +697,12 @@ mod tests {
 
     #[test]
     fn the_picture_executor_emits_exactly_the_expected_reports() {
-        let plan =
-            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let plan = plan::plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let rec = Recorder::new();
         run(&rec, &mut |cx| execute_picture(&plan, cx)).unwrap();
 
@@ -716,6 +726,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -753,6 +764,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -797,6 +809,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -856,6 +869,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -910,6 +924,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -952,6 +967,7 @@ mod tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -979,9 +995,12 @@ mod tests {
     /// still reaches anyone after the move.
     #[test]
     fn a_nonzero_drain_becomes_a_note() {
-        let plan =
-            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let plan = plan::plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let never = AtomicBool::new(false);
         let rec = Recorder::draining(3);
         let (result, events) = run_collecting(&rec, &never, &mut |cx| execute_picture(&plan, cx));
@@ -1014,9 +1033,12 @@ mod tests {
     /// nothing proved the replacement path actually carries them.
     #[test]
     fn transport_diagnostics_become_notes_rather_than_output() {
-        let plan =
-            plan::plan_picture_upload(Path::new("fixtures/test-quadrants.png"), &Adjustments::NONE)
-                .unwrap();
+        let plan = plan::plan_picture_upload(
+            Path::new("fixtures/test-quadrants.png"),
+            Placement::Fill,
+            &Adjustments::NONE,
+        )
+        .unwrap();
         let never = AtomicBool::new(false);
         let rec = Recorder::chatty("DEBUG send: de ad be ef");
         let (result, events) = run_collecting(&rec, &never, &mut |cx| execute_picture(&plan, cx));

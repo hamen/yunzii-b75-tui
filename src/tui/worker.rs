@@ -83,24 +83,60 @@ pub fn spawn_worker(
     std::thread::spawn(move || {
         for job in jobs {
             busy.store(true, Ordering::Relaxed);
+            // Peeked BEFORE `job` moves into the `guarded` closure below: a
+            // panic during a `Job::Replan` must route to `Update::Replan`,
+            // not the generic `Update::Finished` every other job uses, or
+            // `App`'s `replan_pending` flag is never cleared and the confirm
+            // screen locks up for the rest of the session.
+            let replan_generation = replan_generation_of(&job);
             let result = guarded(|| run_job(job, &tx, &ready));
             // Cleared even on a panic. Leaving it set would stop the discovery
             // thread from ever probing again.
             busy.store(false, Ordering::Relaxed);
-            let finished = match result {
-                Ok(r) => r,
-                Err(panic) => Some(Err(format!(
-                    "the job stopped unexpectedly ({panic}) -- whatever was being sent may be \
-                     incomplete"
-                ))),
+            let update = match result {
+                Ok(Some(finished)) => Some(Update::Finished(finished)),
+                Ok(None) => None,
+                Err(panic) => Some(panic_update(replan_generation, panic)),
             };
-            if let Some(finished) = finished
-                && tx.send(Update::Finished(finished)).is_err()
+            if let Some(update) = update
+                && tx.send(update).is_err()
             {
                 return; // the interface is gone
             }
         }
     });
+}
+
+/// Routes a panic to the `Update` that undoes its effects correctly:
+/// `Update::Replan` for a `Job::Replan` (so `replan_pending` clears and the
+/// existing `Pending` stays shown, per `Update::Replan`'s own `Err` arm),
+/// `Update::Finished` for everything else (unchanged from before).
+///
+/// Extracted so it's directly testable without forcing a real panic through
+/// a real worker thread -- the same reasoning `guarded` itself is split out
+/// for.
+fn panic_update(replan_generation: Option<u64>, panic_msg: String) -> Update {
+    let text = format!(
+        "the job stopped unexpectedly ({panic_msg}) -- whatever was being sent may be incomplete"
+    );
+    match replan_generation {
+        Some(generation) => Update::Replan {
+            generation,
+            result: Box::new(Err(text)),
+        },
+        None => Update::Finished(Err(text)),
+    }
+}
+
+/// The generation carried by a `Job::Replan`, or `None` for any other job.
+///
+/// Extracted so the peek-before-move in `spawn_worker` is itself directly
+/// testable, separate from `panic_update`'s routing decision.
+fn replan_generation_of(job: &Job) -> Option<u64> {
+    match job {
+        Job::Replan { generation, .. } => Some(*generation),
+        _ => None,
+    }
 }
 
 /// Runs `f`, turning a panic into a message instead of a dead thread.
@@ -133,6 +169,22 @@ fn run_job(
         } => {
             let built = build_preview(&path, for_gif);
             let _ = tx.send(Update::Preview {
+                generation,
+                result: Box::new(built),
+            });
+            None
+        }
+        Job::Replan {
+            path,
+            for_gif,
+            placement,
+            adjustments,
+            rate_override,
+            row,
+            generation,
+        } => {
+            let built = build_pending(&path, for_gif, placement, adjustments, rate_override, row);
+            let _ = tx.send(Update::Replan {
                 generation,
                 result: Box::new(built),
             });
@@ -171,6 +223,18 @@ fn run_job(
                 notes,
             )
         })),
+        Job::ClearGif => Some(simple(
+            tx,
+            ready,
+            "sent clear-gif (erasure not yet independently confirmed)",
+            |dev, notes| {
+                dev.send_sequence(
+                    ReportIdForm::LeadingZeroOnWrite,
+                    &protocol::build_clear_gif_sequence(),
+                    notes,
+                )
+            },
+        )),
         Job::UploadPicture(mut plan) => {
             // The interface only ever re-encoded the frame it was showing;
             // everything else is caught up here, off the drawing thread.
@@ -194,46 +258,72 @@ fn run_job(
                 plan.total_reports,
                 Some(plan.est_secs),
                 |cx| exec::execute_gif(&plan, cx),
-                "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it",
+                crate::GIF_PARTIAL_WRITE_NOTE,
             ))
         }
     }
 }
 
-fn build_preview(path: &std::path::Path, for_gif: bool) -> Result<Pending, String> {
+/// Builds a `Pending` from a source file. Shared by `Job::Preview` (the
+/// first load, always `Placement::default()`/`Adjustments::NONE`/no
+/// rate override/row 0) and `Job::Replan` (a placement toggle, carrying
+/// forward whatever the user had already chosen). `rate_override`/`row` are
+/// carried through unchanged into the resulting `Pending` -- `rate_override`
+/// is applied onto `plan.rate` only at upload time (`confirm_key`'s Enter
+/// handler), not here, matching how it already worked before Milestone 7.
+fn build_pending(
+    path: &std::path::Path,
+    for_gif: bool,
+    placement: plan::Placement,
+    adjustments: Adjustments,
+    rate_override: Option<u8>,
+    row: usize,
+) -> Result<Pending, String> {
     if for_gif {
         // No `max_frames`: sampling a long animation down is a decision with a
         // suggested rate attached, and this interface has nowhere sensible to
         // put that conversation yet. Refusing with a pointer is honest.
-        let plan = plan::plan_gif_upload(path, None, None, &Adjustments::NONE).map_err(|e| {
-            let mut m = e.to_string();
-            // Matched against a constant the planner owns, not against its
-            // prose: a reworded message must not silently drop the guidance.
-            if m.contains(plan::TOO_MANY_FRAMES) {
-                m.push_str(
-                    "\n(the interface cannot sample frames yet -- use the command line: \
-                     `yunzii-b75-tui set-gif <file> --max-frames 160`)",
-                );
-            }
-            m
-        })?;
+        let plan =
+            plan::plan_gif_upload(path, None, None, placement, &adjustments).map_err(|e| {
+                let mut m = e.to_string();
+                // Matched against a constant the planner owns, not against its
+                // prose: a reworded message must not silently drop the guidance.
+                if m.contains(plan::TOO_MANY_FRAMES) {
+                    m.push_str(
+                        "\n(the interface cannot sample frames yet -- use the command line: \
+                         `yunzii-b75-tui set-gif <file> --max-frames 160`)",
+                    );
+                }
+                m
+            })?;
         Ok(Pending::Gif {
             path: path.to_path_buf(),
             plan,
-            rate_override: None,
-            adjustments: Adjustments::NONE,
-            row: 0,
+            rate_override,
+            adjustments,
+            row,
         })
     } else {
         let plan =
-            plan::plan_picture_upload(path, &Adjustments::NONE).map_err(|e| e.to_string())?;
+            plan::plan_picture_upload(path, placement, &adjustments).map_err(|e| e.to_string())?;
         Ok(Pending::Picture {
             path: path.to_path_buf(),
             plan,
-            adjustments: Adjustments::NONE,
-            row: 0,
+            adjustments,
+            row,
         })
     }
+}
+
+fn build_preview(path: &std::path::Path, for_gif: bool) -> Result<Pending, String> {
+    build_pending(
+        path,
+        for_gif,
+        plan::Placement::default(),
+        Adjustments::NONE,
+        None,
+        0,
+    )
 }
 
 /// The short commands: open, send, close. No progress worth reporting.
@@ -447,6 +537,113 @@ mod tests {
             Pending::Gif { plan, .. } => {
                 assert_eq!(plan.frames.len(), 2);
                 assert_eq!(plan.frames[0].len(), crate::protocol::PICTURE_BYTES);
+            }
+            other => panic!("expected a GIF, got {other:?}"),
+        }
+    }
+
+    /// The first load (`Job::Preview`, both kinds) starts at `Placement::default()`
+    /// (`Contain`) -- the same default the CLI now uses, not the old implicit
+    /// always-`Fill`.
+    #[test]
+    fn a_first_preview_starts_at_the_default_placement() {
+        let gif = build_preview(std::path::Path::new("fixtures/test-anim-2frames.gif"), true)
+            .expect("a valid GIF");
+        match gif {
+            Pending::Gif { plan, .. } => assert_eq!(plan.placement, plan::Placement::Contain),
+            other => panic!("expected a GIF, got {other:?}"),
+        }
+
+        let picture = build_preview(std::path::Path::new("fixtures/test-quadrants.png"), false)
+            .expect("a valid picture");
+        match picture {
+            Pending::Picture { plan, .. } => assert_eq!(plan.placement, plan::Placement::Contain),
+            other => panic!("expected a picture, got {other:?}"),
+        }
+    }
+
+    // --- Milestone 7: Job::Replan / panic routing ---
+
+    /// A panic during `Job::Replan` must route to `Update::Replan`, not the
+    /// generic `Update::Finished` every other job uses -- otherwise
+    /// `App::replan_pending` is never cleared and the confirm screen locks
+    /// up for the rest of the session. Tested directly, without forcing a
+    /// real panic through a real worker thread.
+    #[test]
+    fn panic_update_routes_a_replan_panic_to_update_replan() {
+        let update = panic_update(Some(42), "boom".to_string());
+        match update {
+            Update::Replan { generation, result } => {
+                assert_eq!(generation, 42);
+                let err = result.unwrap_err();
+                assert!(err.contains("boom"), "got {err:?}");
+            }
+            other => panic!("expected Update::Replan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn panic_update_routes_every_other_panic_to_update_finished() {
+        let update = panic_update(None, "boom".to_string());
+        match update {
+            Update::Finished(Err(msg)) => assert!(msg.contains("boom")),
+            other => panic!("expected Update::Finished(Err), got {other:?}"),
+        }
+    }
+
+    /// The peek that has to happen BEFORE `job` moves into the `guarded`
+    /// closure -- tested on its own so a mistake there can't hide behind
+    /// `panic_update`'s own (separately correct) routing logic.
+    #[test]
+    fn replan_generation_of_reads_only_job_replan() {
+        assert_eq!(
+            replan_generation_of(&Job::Replan {
+                path: std::path::PathBuf::from("x.png"),
+                for_gif: false,
+                placement: plan::Placement::Contain,
+                adjustments: Adjustments::NONE,
+                rate_override: None,
+                row: 0,
+                generation: 7,
+            }),
+            Some(7)
+        );
+        assert_eq!(replan_generation_of(&Job::ClearPicture), None);
+    }
+
+    /// `build_pending` (what `Job::Replan`'s handler calls) must carry
+    /// forward `row`/`adjustments`/`rate_override` exactly, not just
+    /// produce SOME new `Pending` -- this is the test round 15 added because
+    /// the App-level tests only prove `App` applies a given `Pending`
+    /// correctly, not that the worker built the right one in the first
+    /// place.
+    #[test]
+    fn build_pending_carries_row_adjustments_and_rate_override_through_a_replan() {
+        let adjustments = Adjustments {
+            brightness: 0.3,
+            ..Adjustments::NONE
+        };
+        let built = build_pending(
+            std::path::Path::new("fixtures/test-anim-2frames.gif"),
+            true,
+            plan::Placement::Fill,
+            adjustments,
+            Some(45),
+            3,
+        )
+        .expect("a valid GIF");
+        match built {
+            Pending::Gif {
+                plan,
+                rate_override,
+                adjustments: got_adj,
+                row,
+                ..
+            } => {
+                assert_eq!(plan.placement, plan::Placement::Fill);
+                assert_eq!(got_adj, adjustments);
+                assert_eq!(rate_override, Some(45));
+                assert_eq!(row, 3);
             }
             other => panic!("expected a GIF, got {other:?}"),
         }

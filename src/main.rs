@@ -118,6 +118,31 @@ impl From<PageArg> for protocol::Page {
     }
 }
 
+/// The vendor's "Location" setting on the Screen Settings panel.
+///
+/// Sends no HID at all -- a client-side resize choice (see PROTOCOL.md).
+/// `Fill` is the vendor's "Cover up completely", but despite the name it is
+/// CSS `object-fit: fill` (plain stretch), not `cover` (crop-to-fill): the
+/// vendor's own resize function draws the whole source into the full
+/// destination rectangle, no cropping.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PlacementArg {
+    /// Scale to fit inside the panel, preserving aspect ratio, centered,
+    /// padded with black. The vendor's own default ("In the middle").
+    Contain,
+    /// Stretch to exactly fill the panel; aspect ratio is not preserved.
+    Fill,
+}
+
+impl From<PlacementArg> for plan::Placement {
+    fn from(arg: PlacementArg) -> Self {
+        match arg {
+            PlacementArg::Contain => plan::Placement::Contain,
+            PlacementArg::Fill => plan::Placement::Fill,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Set the keyboard's clock and date to the current local time.
@@ -135,19 +160,33 @@ enum Commands {
     /// Clear the currently-displayed picture. Whether this also affects a
     /// separately-stored GIF is still untested (see PROTOCOL.md).
     ClearPicture,
+    /// Send the vendor's decoded "Clear GIF" bytes.
+    ///
+    /// The device ACKs all 4 reports, which proves it accepted them -- it
+    /// does not by itself prove the stored animation is erased rather than
+    /// the live display just clearing (see PROTOCOL.md for the pending
+    /// hardware check).
+    ClearGif,
     /// Upload a PNG or JPEG to the TFT screen.
     ///
-    /// The image is stretched to the panel's fixed 160x96 with
-    /// nearest-neighbour sampling -- the same as the vendor's tool, which
-    /// draws with image smoothing switched off. Aspect ratio is not
-    /// preserved. Fully transparent pixels become black; partial
-    /// transparency keeps its full colour rather than blending. EXIF
-    /// orientation is applied, so photos straight off a phone are not
-    /// uploaded sideways. Uploading also switches the panel to the picture
-    /// page, so no separate switch-page is needed.
+    /// The image is fit into the panel's fixed 160x96 per `--placement`
+    /// (default `contain`, matching the vendor's own default -- scales to
+    /// fit, padded with black; `fill` stretches to exactly fill the whole
+    /// panel with `imageSmoothingEnabled = false`-equivalent
+    /// (nearest-neighbour) sampling, matching the vendor's real
+    /// picture-save handler for that case, aspect ratio not preserved --
+    /// despite the vendor's own UI calling this option "Cover up
+    /// completely", it is a plain stretch, not a crop). Fully transparent pixels become
+    /// black; partial transparency keeps its full colour rather than
+    /// blending. EXIF orientation is applied, so photos straight off a
+    /// phone are not uploaded sideways. Uploading also switches the panel
+    /// to the picture page, so no separate switch-page is needed.
     SetPicture {
         /// Path to a PNG or JPEG file.
         path: PathBuf,
+        /// How to fit the image into the panel. Without it, `contain`.
+        #[arg(long, value_enum)]
+        placement: Option<PlacementArg>,
         /// Brightness, -1.0 to 1.0. 0 leaves it alone.
         #[arg(long, value_parser = parse_unit, allow_negative_numbers = true)]
         brightness: Option<f64>,
@@ -175,16 +214,20 @@ enum Commands {
     },
     /// Upload an animated GIF to the TFT screen.
     ///
-    /// Every frame is stretched to the panel's fixed 160x96 the same way
-    /// set-picture does. GIF frame position, transparency and disposal are
-    /// applied, so optimised GIFs work. The keyboard animates at one rate for
-    /// the whole animation and stores at most 160 frames.
+    /// Every frame is fit into the panel's fixed 160x96 per `--placement`
+    /// (default `contain`), the same way set-picture does. GIF frame
+    /// position, transparency and disposal are applied, so optimised GIFs
+    /// work. The keyboard animates at one rate for the whole animation and
+    /// stores at most 160 frames.
     ///
     /// An upload takes roughly a second per frame, because the device pauses
     /// three seconds every sixteenth frame.
     SetGif {
         /// Path to a GIF file.
         path: PathBuf,
+        /// How to fit each frame into the panel. Without it, `contain`.
+        #[arg(long, value_enum)]
+        placement: Option<PlacementArg>,
         /// Brightness, -1.0 to 1.0. 0 leaves it alone.
         #[arg(long, value_parser = parse_unit, allow_negative_numbers = true)]
         brightness: Option<f64>,
@@ -301,8 +344,10 @@ fn main() {
         Commands::SetTime { debug_no_prefix } => run_set_time(debug_no_prefix).map_err(Into::into),
         Commands::SwitchPage { page } => run_switch_page(page.into()).map_err(Into::into),
         Commands::ClearPicture => run_clear_picture().map_err(Into::into),
+        Commands::ClearGif => run_clear_gif().map_err(Into::into),
         Commands::SetPicture {
             path,
+            placement,
             dry_run,
             brightness,
             chroma,
@@ -312,6 +357,7 @@ fn main() {
             blur,
         } => run_set_picture(
             &path,
+            placement.map(Into::into).unwrap_or_default(),
             dry_run,
             &Adjustments {
                 brightness: brightness.unwrap_or(0.0),
@@ -324,6 +370,7 @@ fn main() {
         ),
         Commands::SetGif {
             path,
+            placement,
             fps,
             max_frames,
             dry_run,
@@ -337,6 +384,7 @@ fn main() {
             &path,
             fps,
             max_frames,
+            placement.map(Into::into).unwrap_or_default(),
             dry_run,
             &Adjustments {
                 brightness: brightness.unwrap_or(0.0),
@@ -450,6 +498,28 @@ fn run_clear_picture() -> Result<(), DeviceError> {
     Ok(())
 }
 
+fn run_clear_gif() -> Result<(), DeviceError> {
+    let path = device::find_device()?;
+    println!("found device: {}", path.display());
+
+    let dev = Device::open(&path)?;
+    dev.drain().map_err(|e| e.with_reconnect_hint(&path))?;
+
+    let sequence = protocol::build_clear_gif_sequence();
+    println!("built {} reports (cmd18 pair + cmd19 pair)", sequence.len());
+
+    dev.send_sequence(ReportIdForm::LeadingZeroOnWrite, &sequence, &mut |m| {
+        eprintln!("{m}")
+    })
+    .map_err(|e| e.with_reconnect_hint(&path))?;
+    println!(
+        "sent successfully. The device acknowledged all 4 reports -- check the keyboard's TFT \
+         screen; whether this actually erases the stored animation (vs. just clearing the live \
+         display) is not yet independently confirmed (see PROTOCOL.md)."
+    );
+    Ok(())
+}
+
 /// Runs an upload for the CLI: no cancellation source, notes to stderr.
 ///
 /// The CLI has no key to press and PR A adds no signal handler, so the flag is
@@ -481,15 +551,18 @@ fn run_upload(
 /// What a failed or cancelled GIF upload leaves on the keyboard.
 ///
 /// Deliberately NOT set-picture's message: nothing shows that clear-picture
-/// clears a half-written GIF, and there is no clear-gif command yet. Named so
-/// the test asserts the same string the user sees.
-const GIF_PARTIAL_WRITE_NOTE: &str = "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it \
+/// clears a half-written GIF (a `clear-gif` command ships as of Milestone 7,
+/// but it clears a GIF directly -- it does not answer whether clear-picture
+/// ALSO does, which stays untested). Named so the test asserts the same
+/// string the user sees.
+pub(crate) const GIF_PARTIAL_WRITE_NOTE: &str = "the animation on the keyboard may be incomplete -- re-run set-gif to overwrite it \
      (clear-picture is not known to clear a GIF)";
 
 fn run_set_gif(
     path: &Path,
     fps: Option<u8>,
     max_frames: Option<NonZeroUsize>,
+    placement: plan::Placement,
     dry_run: bool,
     adjustments: &Adjustments,
 ) -> Result<(), AppError> {
@@ -497,10 +570,11 @@ fn run_set_gif(
     // while for a long GIF, and discovering a bad file after 500 writes would
     // leave a half-written animation on the panel for no reason.
     println!("reading {}...", path.display());
+    println!("placement: {placement}");
     if let Some(s) = adjustments.summary() {
         println!("adjustments: {s}");
     }
-    let plan = plan::plan_gif_upload(path, fps, max_frames, adjustments)?;
+    let plan = plan::plan_gif_upload(path, fps, max_frames, placement, adjustments)?;
     print_notes(&plan.notes);
 
     // The plan is self-consistent before anything is sent. Same reasoning as
@@ -525,7 +599,7 @@ fn run_set_gif(
         .map_err(|e| AppError::Device(e.with_reconnect_hint(&dev_path)))?;
 
     // Deliberately NOT set-picture's message: nothing shows that clear-picture
-    // clears a half-written GIF, and there is no clear-gif command yet.
+    // clears a half-written GIF (see GIF_PARTIAL_WRITE_NOTE's doc comment).
     run_upload(
         &dev,
         &dev_path,
@@ -547,11 +621,17 @@ fn run_set_gif(
     Ok(())
 }
 
-fn run_set_picture(path: &Path, dry_run: bool, adjustments: &Adjustments) -> Result<(), AppError> {
+fn run_set_picture(
+    path: &Path,
+    placement: plan::Placement,
+    dry_run: bool,
+    adjustments: &Adjustments,
+) -> Result<(), AppError> {
     // Decode FIRST, before opening the device: a missing or corrupt file
     // should say so, not fail with "device not found" on a machine with no
     // keyboard plugged in.
-    let plan = plan::plan_picture_upload(path, adjustments)?;
+    let plan = plan::plan_picture_upload(path, placement, adjustments)?;
+    println!("placement: {placement}");
     if let Some(s) = adjustments.summary() {
         println!("adjustments: {s}");
     }
@@ -648,6 +728,7 @@ mod cli_tests {
             Path::new("fixtures/test-anim-too-fast.gif"),
             None,
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -684,6 +765,7 @@ mod cli_tests {
             Path::new("fixtures/test-anim-2frames.gif"),
             Some(10),
             None,
+            Placement::Fill,
             &Adjustments::NONE,
         )
         .unwrap();
@@ -753,6 +835,45 @@ mod cli_tests {
                 );
             }
         }
+    }
+
+    /// `--placement` accepts the vendor's two real values (kebab-case, from
+    /// clap's `ValueEnum` derive), rejects anything else, and defaults to
+    /// `None` (i.e. `Placement::Contain` once `.unwrap_or_default()` runs)
+    /// when absent -- on both commands.
+    #[test]
+    fn clap_accepts_contain_and_fill_and_rejects_anything_else_on_both_commands() {
+        for cmd in ["set-picture", "set-gif"] {
+            for value in ["contain", "fill"] {
+                assert!(
+                    Cli::try_parse_from(["yunzii-b75-tui", cmd, "f", "--placement", value]).is_ok(),
+                    "{cmd} --placement {value}"
+                );
+            }
+            assert!(
+                Cli::try_parse_from(["yunzii-b75-tui", cmd, "f", "--placement", "cover"]).is_err(),
+                "{cmd} --placement cover -- the vendor's own UI label, not this flag's value"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_placement_means_the_default_contain() {
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "set-picture", "p.png"]).unwrap();
+        let Commands::SetPicture { placement, .. } = cli.command.unwrap() else {
+            panic!("expected SetPicture");
+        };
+        assert!(placement.is_none());
+        let resolved: plan::Placement = placement.map(Into::into).unwrap_or_default();
+        assert_eq!(resolved, plan::Placement::Contain);
+
+        let cli =
+            Cli::try_parse_from(["yunzii-b75-tui", "set-gif", "a.gif", "--placement", "fill"])
+                .unwrap();
+        let Commands::SetGif { placement, .. } = cli.command.unwrap() else {
+            panic!("expected SetGif");
+        };
+        assert_eq!(placement.map(Into::into), Some(plan::Placement::Fill));
     }
 
     /// The parsed values reach the command, and absent means zero rather than
@@ -855,6 +976,26 @@ mod cli_tests {
         assert_eq!(
             sequence[0][CMD_BYTE_OFFSET], 14,
             "expected inner cmd byte 14"
+        );
+    }
+
+    // --- Milestone 7: clear-gif ---
+
+    #[test]
+    fn parses_clear_gif() {
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "clear-gif"]).unwrap();
+        assert!(matches!(cli.command.unwrap(), Commands::ClearGif));
+    }
+
+    #[test]
+    fn clear_gif_dispatch_produces_cmd18() {
+        const CMD_BYTE_OFFSET: usize = 9;
+        let cli = Cli::try_parse_from(["yunzii-b75-tui", "clear-gif"]).unwrap();
+        assert!(matches!(cli.command.unwrap(), Commands::ClearGif));
+        let sequence = protocol::build_clear_gif_sequence();
+        assert_eq!(
+            sequence[0][CMD_BYTE_OFFSET], 18,
+            "expected inner cmd byte 18"
         );
     }
 

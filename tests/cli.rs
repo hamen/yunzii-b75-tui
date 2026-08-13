@@ -326,6 +326,36 @@ fn without_adjustments_nothing_is_announced() {
     assert!(!stdout(&out).contains("adjustments:"), "{}", stdout(&out));
 }
 
+/// `--placement` is announced in dry-run output on both commands, defaults
+/// to `contain`, and `fill` is available explicitly.
+#[test]
+fn dry_run_reports_the_placement_on_both_commands() {
+    for (cmd, file) in [
+        ("set-picture", "fixtures/test-quadrants.png"),
+        ("set-gif", "fixtures/test-anim-2frames.gif"),
+    ] {
+        let out = run(&[cmd, file, "--dry-run"]);
+        assert!(out.status.success(), "{cmd}: {}", stderr(&out));
+        assert!(
+            stdout(&out).contains("placement: contain"),
+            "{cmd} without --placement should default to contain: {}",
+            stdout(&out)
+        );
+
+        let out = run(&[cmd, file, "--placement", "fill", "--dry-run"]);
+        assert!(
+            out.status.success(),
+            "{cmd} --placement fill: {}",
+            stderr(&out)
+        );
+        assert!(
+            stdout(&out).contains("placement: fill"),
+            "{cmd} --placement fill: {}",
+            stdout(&out)
+        );
+    }
+}
+
 /// Both upload commands accept the same set.
 #[test]
 fn both_commands_take_the_same_adjustments() {
@@ -362,6 +392,7 @@ fn help_lists_the_commands() {
         "set-time",
         "switch-page",
         "clear-picture",
+        "clear-gif",
         "set-picture",
         "set-gif",
     ] {

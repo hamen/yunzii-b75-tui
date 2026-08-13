@@ -1,0 +1,68 @@
+{
+  "_provenance": "Captured live (2026-08-12) via a hook on HIDDevice.prototype.sendReport/sendFeatureReport (out) and the device's own inputreport event (in, a REAL ACK, not constructed via a byte[6] flip) while clicking \"Clear GIF\" (Equipment setup tab). Confirmed deterministic across 3 independent capture attempts this session (2 out-only, 1 full duplex including these real ACKs). Every checksum independently re-verified by hand against the outer checksum16 formula: cmd18's payload sums to 369 (0x0171), matching bytes 4-5 here; cmd19's sums to 547 (0x0223), also matching. This supersedes fields.json's older cmd18_gifSession anecdote (\"Milestone 2's 'Clear GIF' capture sent both as 0x40, so those samples are a different sequence and not a cross-check for these\") with the first decoded, checksummed, committed capture of this command.",
+  "captured": "2026-08-12, one click on \"Clear GIF\", Equipment setup tab. 8 raw HID events total for this one click: 2x [infoPackage-out, infoPackage-ACK-in, finish-out, finish-ACK-in] -- no repeat loop, unlike clear-picture's 16x. The two infoPackage halves carry DIFFERENT payloads (cmd18 then cmd19), not one payload repeated.",
+  "timing": {
+    "epoch_ms": [
+      1786558058323,
+      1786558058330,
+      1786558058330,
+      1786558058332,
+      1786558058333,
+      1786558058334,
+      1786558058335,
+      1786558058336
+    ],
+    "deltas_ms": [7, 0, 2, 1, 1, 1, 1],
+    "note": "Every gap is 0-7ms, ordinary HID round-trip time -- no deliberate vendor pause here, unlike picture-upload's 300ms start-to-declare-size sleep or GIF-upload's 30ms/3000ms host sleeps (see fields.json's own pictureUpload/gifUpload notes for those). build_clear_gif_sequence() therefore adds no artificial delay of its own; Device::send_sequence()'s existing per-report ACK-wait is the only pacing, the same as build_page_switch_sequence()."
+  },
+  "entries": [
+    {
+      "dir": "out",
+      "opcode": "0x40",
+      "cmd": 18,
+      "hex": "40 00 00 09 71 01 00 a5 5a 12 00 01 05 10 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "in",
+      "opcode": "0x40",
+      "cmd": 18,
+      "hex": "40 00 00 09 71 01 55 a5 5a 12 00 01 05 10 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "out",
+      "opcode": "0x42",
+      "cmd": 18,
+      "hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "in",
+      "opcode": "0x42",
+      "cmd": 18,
+      "hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "out",
+      "opcode": "0x40",
+      "cmd": 19,
+      "hex": "40 00 00 09 23 02 00 a5 5a 13 00 02 c4 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "in",
+      "opcode": "0x40",
+      "cmd": 19,
+      "hex": "40 00 00 09 23 02 55 a5 5a 13 00 02 c4 01 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "out",
+      "opcode": "0x42",
+      "cmd": 19,
+      "hex": "42 00 00 38 7a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    },
+    {
+      "dir": "in",
+      "opcode": "0x42",
+      "cmd": 19,
+      "hex": "42 00 00 38 7a 00 55 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+    }
+  ]
+}
