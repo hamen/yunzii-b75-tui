@@ -227,7 +227,7 @@ all.
 Characterised on the real keyboard by sending four different hours. The
 protocol has no test hook for this, so the hours were faked by running
 `set-time` under a different `TZ` — the tool reads local time, so
-`TZ=Asia/Tokyo ./yunzii-b75-tui set-time` sends Tokyo's hour without
+`TZ=Asia/Tokyo ./target/release/yunzii-b75-tui set-time` sends Tokyo's hour without
 touching the host clock:
 
 | `TZ` | hour byte sent | panel shows | correct? |
