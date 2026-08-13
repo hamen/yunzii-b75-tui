@@ -81,13 +81,16 @@ impl std::error::Error for MediaError {}
 ///
 /// The vendor's "Location" dropdown sends no HID at all -- a client-side
 /// resize choice, the same class of finding as Milestone 6's sliders (see
-/// PROTOCOL.md). Traced to the vendor's real GIF resize/placement function
-/// (`Ut()` in the bundle); the picture path's own placement mechanism was
-/// not separately confirmed to use the same geometry (see PROTOCOL.md), so
-/// `Contain` here is vendor-inspired for GIFs and our own internally
-/// consistent choice for pictures -- not vendor-exact for either in the
-/// final resampled pixel values (browser-specific resampling isn't
-/// reproducible in Rust regardless).
+/// PROTOCOL.md). Both paths are now traced: the GIF path's real resize
+/// function (`Ut()`) and the picture path's own placement (a fabric.js
+/// object transform, a different mechanism, same `Math.min`-of-fit-ratios
+/// shape, but with each ratio rounded to 2 decimal places before the
+/// `min` -- so its contain result is not always an exact edge-to-edge fit
+/// the way `Contain` here computes it). `Contain` here is vendor-inspired
+/// for both paths, not vendor-exact for either, in the final resampled
+/// pixel values (browser-specific resampling isn't reproducible in Rust
+/// regardless -- see PROTOCOL.md for exactly what is and isn't confirmed
+/// about each vendor stage).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Placement {
     /// Scale to fit inside the panel, preserving aspect ratio, centered,
@@ -246,11 +249,14 @@ pub fn load_and_encode_picture(
     // `Fill`'s nearest-neighbour matches the vendor's real picture-save
     // handler: it draws the fabric.js canvas onto the export canvas with
     // `imageSmoothingEnabled = false` (a real 2x downscale, 320x192 ->
-    // 160x96, not a same-size copy -- see PROTOCOL.md). What that handler's
-    // own FIRST stage (rendering the source onto its 320x192 canvas in the
-    // first place, where placement itself is presumably decided) actually
-    // does has not been traced -- this claim covers only the final export
-    // step's filter, not the full pipeline.
+    // 160x96, not a same-size copy -- see PROTOCOL.md). That handler's own
+    // FIRST stage (rendering the source onto its 320x192 canvas, where
+    // placement is decided) is also traced now: a fabric.js object
+    // transform, not a pixel algorithm, so there is no first-stage pixel
+    // filter to match here -- but the exact resampling quality fabric.js
+    // applies when rendering that transform is not independently confirmed
+    // (see PROTOCOL.md). This claim covers only the final export step's
+    // filter, which IS confirmed.
     let panel = resize_to_panel(&img, placement);
     let pixels = adjust_and_encode(&panel, adjustments);
     debug_assert_eq!(pixels.len(), protocol::PICTURE_BYTES);

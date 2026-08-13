@@ -959,9 +959,9 @@ fit scale against the *editor* canvas (320×192, i.e. `panel*2` -- a plain
 fabric.js `Canvas`, not a raw pixel buffer):
 
 ```js
-xe = editorWidth  / image.width    // scale to fit width exactly
-ve = editorHeight / image.height   // scale to fit height exactly
-re = Math.min(xe, ve)              // the "contain" scale factor
+xe = round2(editorWidth  / image.width)    // fit-width ratio, ROUNDED FIRST
+ve = round2(editorHeight / image.height)   // fit-height ratio, ROUNDED FIRST
+re = Math.min(xe, ve)                      // the "contain" scale factor
 T === "0"                          // "0" = "in the middle" (contain), same
                                     // encoding and same default as the GIF
                                     // path's placement state
@@ -969,10 +969,22 @@ T === "0"                          // "0" = "in the middle" (contain), same
   : image.set({ scaleX: xe, scaleY: ve, left: 0, top: 0 })  // "1" = stretch
 ```
 
+Each ratio is rounded to 2 decimal places with `.toFixed(2)` **before**
+`Math.min`, so contain does NOT always produce an exact edge-to-edge fit
+on either axis, only an approximate one. Concrete example: a 3840×2160
+source against the 320×192 editor canvas gives `xe = round(320/3840) =
+round(0.0833) = 0.08` and `ve = round(192/2160) = round(0.0889) = 0.09`;
+`re = min(0.08, 0.09) = 0.08`, so the placed image is `3840*0.08 =
+307.2` × `2160*0.08 = 172.8` -- neither dimension touches its editor-canvas
+edge exactly, including the width axis that's nominally the "fit" one.
+Rounding error is small at realistic source sizes but the algorithm is
+approximate by construction, not exact.
+
 Same shape as `Ut()`'s two branches (contain-fit-and-center vs. plain
 stretch), but a genuinely different implementation: a fabric.js *object
-transform* (scale + position properties on the image, rounded to 2 decimal
-places), not a pixel-level canvas draw. `y.current` (the fabric `Canvas`
+transform* (scale + position properties on the image, each ratio rounded
+to 2 decimal places as shown above, unlike `Ut()`'s exact float math),
+not a pixel-level canvas draw. `y.current` (the fabric `Canvas`
 this transform lives on) wraps the SAME DOM element as `L.current` (stage
 2's raw draw source below) -- fabric's `Canvas` constructor takes
 `L.current` directly and sets no smoothing option of its own (see
