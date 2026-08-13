@@ -220,8 +220,9 @@ UTC conversion in the vendor code.
 ### A firmware bug in the panel's 12-hour clock (2026-08-13)
 
 The hour byte we send is plain 0-23. The panel renders it in 12-hour form
-with an AM/PM indicator, and **its conversion is wrong for exactly two
-hours of the day**.
+with an AM/PM indicator, and **that conversion is wrong for at least two of
+the four hours tested** — including noon, which is why this was noticed at
+all.
 
 Characterised on the real keyboard by sending four different hours. The
 protocol has no test hook for this, so the hours were faked by running
@@ -243,8 +244,9 @@ them, not a second measurement.
 The four results match `display_hour = hour % 12` with the
 `if (display_hour == 0) display_hour = 12` line missing — the two failures
 are exactly the two hours that map to zero under mod 12, and the AM/PM flag
-(`hour >= 12`) is right in all four cases including both failures, so only
-the digits are ever wrong. If that formula is the actual implementation
+(`hour >= 12`) is right in all four cases including both failures — in
+those four, only the digits were ever wrong. If that formula is the actual
+implementation
 then the clock is wrong through the noon and midnight hours and correct the
 other 22, but **the remaining 20 hours were not tested** and a different
 implementation could fit the same four points. Treat the formula as a
