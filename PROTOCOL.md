@@ -894,28 +894,33 @@ sliders and M7's placement. None of this is implemented here; it is
 recorded because it explains a real, verifiable visual difference from the
 vendor for GIFs specifically, not because it blocks anything.
 
-**`pn(image)`** -- edge-aware denoise, unconditional, GIF path only. Two
-passes over the resized frame: (1) mark a pixel as "near an edge" if any
-channel's horizontal or vertical neighbour-difference exceeds 25; (2) for
-marked pixels, blend the pixel with a 5-tap triangular-weighted run along
-whichever axis has the *smaller* gradient (smoothing parallel to an edge,
-not across it, so the edge itself stays sharp); for unmarked (flat) pixels,
-blend 60% original / 40% four-neighbour average. Net effect: softens flat
-regions and diagonal edges before the RGB565 quantization step below,
-which is what quantization banding needs to hide.
+**`pn(image)`** -- edge-aware denoise, unconditional, GIF path only. A
+2-pixel border on every side is left completely untouched (the loops run
+`2..width-2` / `2..height-2`); everything inside that border goes through
+two passes: (1) mark a pixel as a raw edge if any channel's horizontal or
+vertical neighbour-difference exceeds 25; (2) dilate that mask by one
+pixel (a pixel counts as "near an edge" if it OR any of its 8 neighbours
+was marked in pass 1) -- dilated-edge pixels get blended with a 5-tap
+triangular-weighted run along whichever axis has the *smaller* gradient
+(smoothing parallel to an edge, not across it, so the edge itself stays
+sharp); every other (flat) pixel gets a 60% original / 40% four-neighbour
+average blend. Net effect: softens flat regions and diagonal edges before
+the RGB565 quantization step below, which is what quantization banding
+needs to hide.
 
 **`Vr(image, amount=0.3)`** -- edge-aware local-contrast boost, GIF path
 only, gated by the sharpen toggle, called with `amount=0.25` from this call
-site (its own default is `0.3`). For each pixel: compute the 4-neighbour
-average from an unmodified snapshot (so passes don't compound down a row),
-then push the pixel away from that average by `amount`, scaled down near
-strong edges (`amount * 0.3` when either axis's gradient exceeds 40,
-otherwise a smooth taper by gradient strength) -- an unsharp mask that
-avoids haloing at real edges. This is genuinely additional to `sharpen()`:
-the vendor runs its fabric `Convolute` kernel pre-placement (both picture
-and GIF paths, already matched here) AND this edge-aware pass
-post-placement (GIF path only, not matched here) when the same toggle is
-on.
+site (its own default is `0.3`). A 1-pixel border on every side is left
+untouched (the loop runs `1..height-1` / `1..width-1`); every other pixel:
+compute the 4-neighbour average from an unmodified snapshot (so passes
+don't compound down a row), then push the pixel away from that average by
+`amount`, scaled down near strong edges (`amount * 0.3` when either axis's
+gradient exceeds 40, otherwise a smooth taper by gradient strength) -- an
+unsharp mask that avoids haloing at real edges. This is genuinely
+additional to `sharpen()`: the vendor runs its fabric `Convolute` kernel
+pre-placement (both picture and GIF paths, already matched here) AND this
+edge-aware pass post-placement (GIF path only, not matched here) when the
+same toggle is on.
 
 **`wn(image)`** -- the GIF path's RGB565 packer, and it is NOT the same
 function as the picture path's (`te`, `rgb565_encode`'s vendor
@@ -923,9 +928,10 @@ counterpart, documented above as truncating with no dither -- correctly
 matched by this repo for both paths today). `wn` performs error-diffusion
 dithering in the same directional *shape* as Floyd-Steinberg (right,
 down-left, down) but NOT its coefficients: for each pixel, add the
-accumulated error, quantize to 5/6/5 bits (integer depths 31/63/31, not
-the usual 255), compute the truncation remainder, and distribute it
-forward to the right neighbour at weight 1/2 and to the next row's
+accumulated error, quantize to 5/6/5 bits with `Math.round` (integer
+depths 31/63/31, not the usual 255), compute the signed rounding error
+(actual minus quantized, so it can go either direction), and distribute
+it forward to the right neighbour at weight 1/2 and to the next row's
 down-left and down neighbours at weight 1/4 each -- three taps summing to
 1, with no down-right term and none of the classic algorithm's 7/16,
 3/16, 5/16, 1/16 weights. So: this repo's existing `rgb565_encode`
