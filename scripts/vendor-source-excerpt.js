@@ -27,6 +27,33 @@
 // this object's keys are used as-is by the site's own code, verbatim):
 //   sendScreenControlInformationPackage:"0x40",sendScreenControlDataPacket:"0x41",finishScreenControlDataPacket:"0x42",getDongleAndKeyboardStatus:"0x55",getFirmwareVersion:"0xB0",toBootLoader:"0xB1",getBootLoaderStatus:"0xB2",confirmFirmwareInfo:"0xB3",startUpgrade:"0xB4",transferUpgradeData:"0xB5",upgradeComplete:"0xB6",endUpgrade:"0xB7"
 
+// GIF-save frame pipeline call site, verbatim (re-fetched 2026-08-13 from the
+// SAME file -- index-8Bj3uPPc.js, identical byte length -- as the excerpt
+// above; offset ~2180990 of that fetch). `Ie` here is the save mode
+// (0/1/2), NOT the placement value used elsewhere in this file:
+//   Pr=async Ie=>{var et;try{if(he.current&&P.length>0){const Fe=[];y(!0),W($t("oxq2hkb","准备处理GIF帧...","lang")),Q(0);let ke=0;Ie===0?ke=Math.min(P.length,64):Ie===1?ke=Math.min(P.length,160):Ie===2&&(ke=Math.min(P.length,42));const st=Ie===2?96:t,ut=Ie===2?64:n,le=document.createElement("canvas");le.width=st,le.height=ut;const me=le.getContext("2d",{willReadFrequently:!0});me.imageSmoothingEnabled=!1;for(let Ee=0;Ee<ke;Ee++){const Be=Math.floor(Ee/ke*50);Q(Be),W(`${$t("dlmn93","处理帧","lang")}${Ee+1}/${ke}`),await new Promise(xt=>setTimeout(xt,0));const nt=P[Ee];if(nt instanceof jn.fabric.Image){const xt=nt.getElement();nt.filters&&nt.filters.length>0&&(nt.applyFilters(),(et=he.current)==null||et.renderAll());let Kt=Ut(xt,st,ut,D);Kt=pn(Kt),x&&Vr(Kt,.25);const ft=wn(Kt),Dt=Array.from(ft).flatMap(pt=>[pt>>8&255,pt&255]);Fe.push(Dt)}}
+
+// `x` is a plain useState boolean, verbatim (offset ~2171635), and its
+// setter is loaded from a saved preset's `sharpen` field elsewhere in the
+// same component (offset ~2172652) -- the same control M6 already found
+// driving the pre-placement fabric `Convolute` sharpen kernel:
+//   [x,S]=j.useState(!1)
+//   ... S(Fe.sharpen) ...
+
+// pn(): edge-aware denoise, verbatim (offset ~2185156):
+//   function pn(Ie){const et=Ie.width,Fe=Ie.height,ke=Ie.data,st=new Uint8ClampedArray(ke),ut=new ImageData(st,et,Fe),le=2,me=25,Ee=new Array(et*Fe).fill(!1);for(let Be=le;Be<Fe-le;Be++)for(let nt=le;nt<et-le;nt++){const xt=(Be*et+nt)*4;let Kt=!1;for(let ft=0;ft<3;ft++){const Dt=ke[xt-4+ft],pt=ke[xt+4+ft],mt=Math.abs(Dt-pt),yt=ke[xt-et*4+ft],Nt=ke[xt+et*4+ft],gn=Math.abs(yt-Nt);if(mt>me||gn>me){Kt=!0;break}}Ee[Be*et+nt]=Kt}for(let Be=le;Be<Fe-le;Be++)for(let nt=le;nt<et-le;nt++){const xt=(Be*et+nt)*4;let Kt=!1;for(let ft=-1;ft<=1;ft++){for(let Dt=-1;Dt<=1;Dt++)if(Ee[(Be+ft)*et+(nt+Dt)]){Kt=!0;break}if(Kt)break}if(Kt){let ft=0,Dt=0;for(let pt=0;pt<3;pt++)ft+=Math.abs(ke[xt-4+pt]-ke[xt+4+pt]),Dt+=Math.abs(ke[xt-et*4+pt]-ke[xt+et*4+pt]);if(ft>Dt)for(let pt=0;pt<3;pt++){let mt=0,yt=0;for(let Nt=-2;Nt<=le;Nt++){const gn=Be+Nt;if(gn<0||gn>=Fe)continue;const It=(gn*et+nt)*4+pt,mn=le+1-Math.abs(Nt);mt+=ke[It]*mn,yt+=mn}st[xt+pt]=Math.round(mt/yt)}else for(let pt=0;pt<3;pt++){let mt=0,yt=0;for(let Nt=-2;Nt<=le;Nt++){const gn=nt+Nt;if(gn<0||gn>=et)continue;const It=(Be*et+gn)*4+pt,mn=le+1-Math.abs(Nt);mt+=ke[It]*mn,yt+=mn}st[xt+pt]=Math.round(mt/yt)}}else for(let ft=0;ft<3;ft++){const Dt=ke[xt+ft],pt=ke[xt-et*4+ft],mt=ke[xt+et*4+ft],yt=ke[xt-4+ft],Nt=ke[xt+4+ft];st[xt+ft]=Math.round(Dt*.6+(pt+mt+yt+Nt)/4*.4)}}return ut}
+
+// Vr(): edge-aware local-contrast/sharpen, verbatim (offset ~2183721):
+//   function Vr(Ie,et=.3){const Fe=Ie.data,ke=Ie.width,st=Ie.height,ut=new Uint8ClampedArray(Fe);for(let le=1;le<st-1;le++)for(let me=1;me<ke-1;me++){const Ee=(le*ke+me)*4;for(let Be=0;Be<3;Be++){const nt=ut[Ee+Be],xt=ut[Ee-ke*4+Be],Kt=ut[Ee-4+Be],ft=ut[Ee+4+Be],Dt=ut[Ee+ke*4+Be],pt=Math.abs(Kt-ft),mt=Math.abs(xt-Dt),yt=pt>40||mt>40;let Nt=et;if(yt)Nt=et*.3;else{const It=Math.min(1,(pt+mt)/50);Nt=et*(1-It*.5)}const gn=(xt+Kt+ft+Dt)/4;Fe[Ee+Be]=Math.max(0,Math.min(255,nt+(nt-gn)*Nt))}}}
+
+// wn(): RGB565 packer with error-diffusion dithering, verbatim (offset
+// ~2186483). NOTE the weights on the two `+=` groups: the right-neighbour
+// term is `*2/4` (= 1/2) and the two down-row terms are each `*1/4` -- three
+// taps total (right, down-left, down), no down-right term. This is NOT the
+// classic Floyd-Steinberg coefficients (7/16, 3/16, 5/16, 1/16); it is the
+// vendor's own simpler 3-tap scheme in the same directional shape:
+//   function wn(Ie){const et=Ie.data,Fe=Ie.width,ke=Ie.height,st=new Uint16Array(Fe*ke),ut=new Array(Fe*ke*3).fill(0);for(let le=0;le<ke;le++)for(let me=0;me<Fe;me++){const Ee=(le*Fe+me)*4,Be=(le*Fe+me)*3;let nt=Math.max(0,Math.min(255,et[Ee]+ut[Be])),xt=Math.max(0,Math.min(255,et[Ee+1]+ut[Be+1])),Kt=Math.max(0,Math.min(255,et[Ee+2]+ut[Be+2]));const ft=Math.min(31,Math.round(nt/255*31)),Dt=Math.min(63,Math.round(xt/255*63)),pt=Math.min(31,Math.round(Kt/255*31)),mt=nt-ft*255/31,yt=xt-Dt*255/63,Nt=Kt-pt*255/31;me<Fe-1&&(ut[Be+3]+=mt*2/4,ut[Be+4]+=yt*2/4,ut[Be+5]+=Nt*2/4),le<ke-1&&(me>0&&(ut[Be+Fe*3-3]+=mt*1/4,ut[Be+Fe*3-2]+=yt*1/4,ut[Be+Fe*3-1]+=Nt*1/4),ut[Be+Fe*3]+=mt*1/4,ut[Be+Fe*3+1]+=yt*1/4,ut[Be+Fe*3+2]+=Nt*1/4),st[le*Fe+me]=ft<<11|Dt<<5|pt}return st}
+
 // =====================================================================
 // DEMINIFIED (readability aid only -- not verbatim evidence; see above
 // for the actual source text this is derived from)
