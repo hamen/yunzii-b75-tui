@@ -920,15 +920,18 @@ on.
 **`wn(image)`** -- the GIF path's RGB565 packer, and it is NOT the same
 function as the picture path's (`te`, `rgb565_encode`'s vendor
 counterpart, documented above as truncating with no dither -- correctly
-matched by this repo for both paths today). `wn` performs Floyd-Steinberg
-error diffusion: for each pixel, add the accumulated error, quantize to
-5/6/5 bits, compute the truncation remainder, and distribute it forward
-(right neighbour: 2/4 weight) and to the next row (down-left, down,
-down-right: 1/4 weight each) exactly like the classic algorithm, using
-integer bit depths (31/63/31) instead of the usual 255. So: this repo's
-existing `rgb565_encode` (truncate, no dither) matches the vendor's
-**picture** path exactly, and mismatches the vendor's **GIF** path, which
-dithers.
+matched by this repo for both paths today). `wn` performs error-diffusion
+dithering in the same directional *shape* as Floyd-Steinberg (right,
+down-left, down) but NOT its coefficients: for each pixel, add the
+accumulated error, quantize to 5/6/5 bits (integer depths 31/63/31, not
+the usual 255), compute the truncation remainder, and distribute it
+forward to the right neighbour at weight 1/2 and to the next row's
+down-left and down neighbours at weight 1/4 each -- three taps summing to
+1, with no down-right term and none of the classic algorithm's 7/16,
+3/16, 5/16, 1/16 weights. So: this repo's existing `rgb565_encode`
+(truncate, no dither) matches the vendor's **picture** path exactly, and
+mismatches the vendor's **GIF** path, which dithers (with the vendor's
+own 3-tap scheme above, not textbook Floyd-Steinberg).
 
 One more confirmed detail read from the same function: GIF save **mode
 2**'s target canvas is `96×64`, not the panel's `160×96` -- independent
@@ -965,8 +968,9 @@ new pair distinct from the GIF session pair) are decoded, checksummed, and
 confirmed deterministic; GIF save mode 2 closes as resolved-N/A (the
 vendor's own UI doesn't offer it for this product, see below); the
 `pn`/`Vr`/`wn` GIF-save post-process is fully decoded (edge-aware denoise,
-a second edge-aware sharpen pass, and Floyd-Steinberg dithering in RGB565
-packing -- see above) -- decoded and not protocol, same as the sliders, but
+a second edge-aware sharpen pass, and error-diffusion dithering (Floyd-
+Steinberg-shaped, not its exact weights) in RGB565 packing -- see above)
+-- decoded and not protocol, same as the sliders, but
 NOT implemented here, so GIFs from this tool will show more banding and
 less of the vendor's post-resize sharpening than the vendor's own upload,
 by design until a future milestone decides otherwise.
@@ -1035,7 +1039,7 @@ What is genuinely left:
   doesn't say what `clear-picture` does to one.
 - **Whether to implement the vendor's `pn`/`Vr`/`wn` GIF-save post-process**
   (decoded in full above -- edge-aware denoise, a second edge-aware sharpen
-  pass, and Floyd-Steinberg RGB565 dithering) -- not a discovery gap
+  pass, and RGB565 error-diffusion dithering) -- not a discovery gap
   anymore, a product decision: GIFs from this tool will show more banding
   and less post-resize sharpening than the vendor's own upload until this
   is implemented, or the gap is accepted as-is.
