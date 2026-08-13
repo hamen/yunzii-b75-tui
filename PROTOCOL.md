@@ -868,6 +868,74 @@ command, tracked separately; until it passes, treat `clear-gif` as
 "captured, decoded, ACKed -- not yet confirmed to persist across a
 reconnect".
 
+## The GIF-save post-process (`pn`/`Vr`/`wn`) -- decoded, not protocol, not implemented (Milestone 7 follow-up)
+
+Milestone 7 left this named but unread: the vendor's real per-frame GIF-save
+call site (source, unminified names restored by hand from context) is
+
+```js
+nt.applyFilters();                 // fabric.js filters: grayscale/blur/
+                                    // saturation/brightness/tone -- M6
+let Kt = Ut(xt, st, ut, D);        // placement/resize to panel res -- M7
+Kt = pn(Kt);                       // ALWAYS runs
+x && Vr(Kt, .25);                  // runs only if the "sharpen" toggle is on
+const ft = wn(Kt);                 // RGB565 pack
+```
+
+`x` is the same React state the sharpen checkbox writes (`S(Fe.sharpen)`
+loads it from a saved preset; `S(...)` is its setter) -- the identical
+control M6 already found drives the pre-placement fabric.js `Convolute`
+sharpen kernel this repo replicates in `sharpen()` (`src/adjust.rs`). `Vr`
+is a **second, separate** sharpen pass gated by the same toggle, not an
+alias for the first one.
+
+All three functions read pixels, not the wire -- same category as M6's
+sliders and M7's placement. None of this is implemented here; it is
+recorded because it explains a real, verifiable visual difference from the
+vendor for GIFs specifically, not because it blocks anything.
+
+**`pn(image)`** -- edge-aware denoise, unconditional, GIF path only. Two
+passes over the resized frame: (1) mark a pixel as "near an edge" if any
+channel's horizontal or vertical neighbour-difference exceeds 25; (2) for
+marked pixels, blend the pixel with a 5-tap triangular-weighted run along
+whichever axis has the *smaller* gradient (smoothing parallel to an edge,
+not across it, so the edge itself stays sharp); for unmarked (flat) pixels,
+blend 60% original / 40% four-neighbour average. Net effect: softens flat
+regions and diagonal edges before the RGB565 quantization step below,
+which is what quantization banding needs to hide.
+
+**`Vr(image, amount=0.3)`** -- edge-aware local-contrast boost, GIF path
+only, gated by the sharpen toggle, called with `amount=0.25` from this call
+site (its own default is `0.3`). For each pixel: compute the 4-neighbour
+average from an unmodified snapshot (so passes don't compound down a row),
+then push the pixel away from that average by `amount`, scaled down near
+strong edges (`amount * 0.3` when either axis's gradient exceeds 40,
+otherwise a smooth taper by gradient strength) -- an unsharp mask that
+avoids haloing at real edges. This is genuinely additional to `sharpen()`:
+the vendor runs its fabric `Convolute` kernel pre-placement (both picture
+and GIF paths, already matched here) AND this edge-aware pass
+post-placement (GIF path only, not matched here) when the same toggle is
+on.
+
+**`wn(image)`** -- the GIF path's RGB565 packer, and it is NOT the same
+function as the picture path's (`te`, `rgb565_encode`'s vendor
+counterpart, documented above as truncating with no dither -- correctly
+matched by this repo for both paths today). `wn` performs Floyd-Steinberg
+error diffusion: for each pixel, add the accumulated error, quantize to
+5/6/5 bits, compute the truncation remainder, and distribute it forward
+(right neighbour: 2/4 weight) and to the next row (down-left, down,
+down-right: 1/4 weight each) exactly like the classic algorithm, using
+integer bit depths (31/63/31) instead of the usual 255. So: this repo's
+existing `rgb565_encode` (truncate, no dither) matches the vendor's
+**picture** path exactly, and mismatches the vendor's **GIF** path, which
+dithers.
+
+One more confirmed detail read from the same function: GIF save **mode
+2**'s target canvas is `96×64`, not the panel's `160×96` -- independent
+confirmation that mode 2 targets a different physical screen (consistent
+with its vendor-UI gate on product ID 12463, this keyboard is 12744, see
+above).
+
 ## What's resolved vs. not (see `fields.json`'s `unresolved` list for detail)
 
 **Resolved** — every transmit-required field for "Update device time": HID op
@@ -895,7 +963,13 @@ frame-rate byte. `switch-page gif` ships too; it was correct all along.
 above), same as Milestone 6's sliders; `clear-gif`'s bytes (cmd18/cmd19, a
 new pair distinct from the GIF session pair) are decoded, checksummed, and
 confirmed deterministic; GIF save mode 2 closes as resolved-N/A (the
-vendor's own UI doesn't offer it for this product, see below).
+vendor's own UI doesn't offer it for this product, see below); the
+`pn`/`Vr`/`wn` GIF-save post-process is fully decoded (edge-aware denoise,
+a second edge-aware sharpen pass, and Floyd-Steinberg dithering in RGB565
+packing -- see above) -- decoded and not protocol, same as the sliders, but
+NOT implemented here, so GIFs from this tool will show more banding and
+less of the vendor's post-resize sharpening than the vendor's own upload,
+by design until a future milestone decides otherwise.
 
 **Unresolved** (named, not silently missing): the numeric meaning of the
 `finish` command's constant length byte (`0x38`); whether `clear-picture`
@@ -907,12 +981,10 @@ the vendor's *intended* mode-2 behavior would need a product-ID-12463 unit;
 `clear-gif`'s functional effect (erasure vs. just clearing the live display)
 -- captured and ACKed, not yet visually confirmed across a reconnect; the
 2.4 GHz dongle and Bluetooth connection modes; any connect/init traffic before
-the first command; a previously undocumented `pn()`/`Vr()` post-process seen
-in the vendor's real GIF-save call site (`nt.applyFilters(); ...;
-Kt=Ut(xt,st,ut,D); Kt=pn(Kt); x&&Vr(Kt,.25); ...`) -- an apparent
-anti-banding/dither step, unconditional (`pn`) and conditionally gated
-(`Vr`, on an unidentified control) -- not investigated, not implemented, a
-new open item for a future milestone.
+the first command; WHETHER to implement the vendor's `pn`/`Vr`/`wn` GIF-save
+post-process (decoded in full below -- denoise, a second sharpen pass, and
+RGB565 dithering, none matched by this repo's GIF path today) -- a product
+decision on visual fidelity, not a discovery gap.
 
 ### The GIF-page mystery, solved
 
@@ -961,9 +1033,12 @@ What is genuinely left:
 - **Whether `clear-picture` disturbs a stored GIF.** `clear-gif` (this
   milestone) answers a different question -- it clears a GIF directly, it
   doesn't say what `clear-picture` does to one.
-- **A previously-undocumented `pn()`/`Vr()` post-process**, found this
-  milestone in the vendor's real GIF-save call site (see above) -- an
-  apparent anti-banding/dither step, not investigated, not implemented.
+- **Whether to implement the vendor's `pn`/`Vr`/`wn` GIF-save post-process**
+  (decoded in full above -- edge-aware denoise, a second edge-aware sharpen
+  pass, and Floyd-Steinberg RGB565 dithering) -- not a discovery gap
+  anymore, a product decision: GIFs from this tool will show more banding
+  and less post-resize sharpening than the vendor's own upload until this
+  is implemented, or the gap is accepted as-is.
 - The picture path's fabric.js first-stage rendering (source onto its
   320×192 canvas, where placement is presumably decided) -- traced only as
   far as the SECOND stage (see above); the first stage's own placement
