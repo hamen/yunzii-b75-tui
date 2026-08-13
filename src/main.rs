@@ -160,12 +160,11 @@ enum Commands {
     /// Clear the currently-displayed picture. Whether this also affects a
     /// separately-stored GIF is still untested (see PROTOCOL.md).
     ClearPicture,
-    /// Send the vendor's decoded "Clear GIF" bytes.
+    /// Erase the stored GIF animation.
     ///
-    /// The device ACKs all 4 reports, which proves it accepted them -- it
-    /// does not by itself prove the stored animation is erased rather than
-    /// the live display just clearing (see PROTOCOL.md for the pending
-    /// hardware check).
+    /// Confirmed on hardware against a control run: with this command the
+    /// GIF is gone after a replug; without it, the same GIF replays after a
+    /// replug (see PROTOCOL.md).
     ClearGif,
     /// Upload a PNG or JPEG to the TFT screen.
     ///
@@ -513,9 +512,8 @@ fn run_clear_gif() -> Result<(), DeviceError> {
     })
     .map_err(|e| e.with_reconnect_hint(&path))?;
     println!(
-        "sent successfully. The device acknowledged all 4 reports -- check the keyboard's TFT \
-         screen; whether this actually erases the stored animation (vs. just clearing the live \
-         display) is not yet independently confirmed (see PROTOCOL.md)."
+        "sent successfully. The stored GIF is erased, not just cleared from the display -- \
+         confirmed on hardware against a control run (see PROTOCOL.md)."
     );
     Ok(())
 }

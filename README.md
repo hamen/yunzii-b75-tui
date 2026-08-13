@@ -49,9 +49,9 @@ too, on both upload commands and in the interface.
 
 **🎛️ `--placement contain|fill`** now controls how an image fits the panel
 (default `contain`, matching the vendor's own default). **🧹 `clear-gif`**
-ships too, decoded from a live capture -- its bytes are confirmed accepted
-by the device, but not yet independently confirmed to erase the stored
-animation rather than just the live display (see `PROTOCOL.md`).
+ships too, decoded from a live capture and confirmed on real hardware
+(against a control run) to genuinely erase the stored animation, not just
+clear the live display (see `PROTOCOL.md`).
 
 ---
 
@@ -251,10 +251,11 @@ repeat loop — structurally unrelated to `clear-picture` despite the vendor's
 own internal naming suggesting otherwise (see `PROTOCOL.md`). No `--dry-run`, same as
 `clear-picture`.
 
-The device ACKing all 4 reports proves it accepted them; it does not by
-itself prove the stored animation is actually erased rather than just the
-live display clearing — that needs a visual check (save a GIF, run
-`clear-gif`, reconnect the keyboard, confirm the old GIF does not come back).
+Confirmed on hardware (2026-08-13) to really erase, not just blank the
+display: with `clear-gif`, the GIF is gone after a replug; without it, the
+same GIF replays after a replug. The control run is what makes that
+conclusive — an empty GIF page and a `switch-page` that did nothing look
+identical on screen. A mode-1 GIF otherwise survives a power cycle.
 
 The udev rule is limited to **interface 1**, the configuration channel this
 tool talks to. That limit is the point: interface 0 is the keyboard itself, so
