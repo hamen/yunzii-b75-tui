@@ -220,9 +220,9 @@ UTC conversion in the vendor code.
 ### A firmware bug in the panel's 12-hour clock (2026-08-13)
 
 The hour byte we send is plain 0-23. The panel renders it in 12-hour form
-with an AM/PM indicator, and **that conversion is wrong for the two hours
-that map to zero under mod 12** — midnight and noon. Noon is why this was
-noticed at all.
+with an AM/PM indicator, and **it is wrong at both of the hours that map to
+zero under mod 12** — midnight and noon. Noon is why this was noticed at
+all.
 
 Characterised on the real keyboard over eight hour values. The protocol has
 no test hook for this and nothing reports back what is displayed, so the
@@ -243,11 +243,12 @@ read off the panel by eye:
 | `Asia/Tokyo` | 19 | `PM 7:54` | ✓ |
 
 The second pass (23, 1, 11, 13) was chosen deliberately to **bracket both
-failures**: each broken hour now has its immediate neighbour on either side
-confirmed correct. That is what rules out the broad alternatives — it is
-not "PM is broken", not "`hour >= 12` is broken", not an off-by-one across
-a range. The damage is isolated to exactly the two hours that mod 12 sends
-to zero.
+known failures**: each broken hour now has its immediate neighbour on
+either side confirmed correct. That is what rules out the broad
+alternatives — it is not "PM is broken", not "`hour >= 12` is broken", not
+an off-by-one across a range. Note what this does and does not establish:
+the two failures are isolated *from their neighbours*, which is not the
+same as proving no other hour fails. Sixteen hours were never looked at.
 
 **What is measured, and what is inferred.** Measured: those eight hours, on
 this unit, rendered as shown. The formula below is the inference that fits
@@ -260,11 +261,12 @@ everything tested only the digits were ever wrong, never the meridiem. If
 that formula is the actual implementation then the clock is wrong through
 the noon and midnight hours and correct the other 22.
 
-Thirteen hours (2-9, 14-18, 20-22) remain untested, so this is still an
-inference rather than a read of the firmware — but with both failure
-boundaries isolated, an implementation that fits these eight points and
-still misbehaves elsewhere is hard to construct. Treat it as a strong
-hypothesis.
+Sixteen hours (2-9, 14-18, 20-22) remain untested, so this is still an
+inference rather than a read of the firmware, and nothing here excludes a
+separate failure hiding in one of them. What the bracketing does buy is
+that the two failures we know about behave exactly as the formula predicts,
+at both boundaries. Treat it as a strong hypothesis about the two known
+failures, not as a proof that the other sixteen hours are fine.
 
 **This is the device's own firmware, not this tool and not a protocol
 mistake we are making.** The bytes we send are byte-identical to the
